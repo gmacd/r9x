@@ -1,11 +1,11 @@
-use crate::deviceutil::map_device_register;
+use crate::deviceutil::{find_dt_physrange, map_device_register};
 use crate::io::{GpioPull, delay, read_reg, write_reg};
 use crate::registers::{GPPUD, GPPUDCLK0};
 use crate::{mailbox, vm};
 use port::Result;
 use port::devcons::Uart;
 use port::fdt::DeviceTree;
-use port::mem::{PhysRange, VirtRange};
+use port::mem::VirtRange;
 
 #[cfg(not(test))]
 use port::println;
@@ -34,7 +34,7 @@ pub struct Pl011Uart {
 #[allow(dead_code)]
 impl Pl011Uart {
     pub fn new(dt: &DeviceTree) -> Result<Pl011Uart> {
-        let gpio_physrange = Self::find_gpio_physrange(dt)?;
+        let gpio_physrange = find_dt_physrange(dt, &["brcm,bcm2835-gpio"], "can't find gpio")?;
         let gpio_virtrange = match map_device_register("gpio", gpio_physrange, vm::PageSize::Page4K)
         {
             Ok(gpio_virtrange) => gpio_virtrange,
@@ -44,7 +44,7 @@ impl Pl011Uart {
             }
         };
 
-        let pl011_physrange = Self::find_pl011_physrange(dt)?;
+        let pl011_physrange = find_dt_physrange(dt, &["arm,pl011"], "can't find pl011")?;
         let pl011_virtrange =
             match map_device_register("pl011", pl011_physrange, vm::PageSize::Page4K) {
                 Ok(pl011_virtrange) => pl011_virtrange,
@@ -55,24 +55,6 @@ impl Pl011Uart {
             };
 
         Ok(Pl011Uart { gpio_virtrange, pl011_virtrange })
-    }
-
-    fn find_gpio_physrange(dt: &DeviceTree) -> Result<PhysRange> {
-        dt.find_compatible("brcm,bcm2835-gpio")
-            .next()
-            .and_then(|uart| dt.property_translated_reg_iter(uart).next())
-            .and_then(|reg| reg.regblock())
-            .map(|reg| PhysRange::from(&reg))
-            .ok_or("can't find gpio")
-    }
-
-    fn find_pl011_physrange(dt: &DeviceTree) -> Result<PhysRange> {
-        dt.find_compatible("arm,pl011")
-            .next()
-            .and_then(|uart| dt.property_translated_reg_iter(uart).next())
-            .and_then(|reg| reg.regblock())
-            .map(|reg| PhysRange::from(&reg))
-            .ok_or("can't find pl011")
     }
 
     pub fn init(&self) {

@@ -1,8 +1,26 @@
-use port::Result;
+use port::fdt::DeviceTree;
 use port::mem::{PhysRange, VirtRange};
+use port::Result;
 
 use crate::vm::{PhysPageAllocator, VmTraitImpl};
 use crate::{pagealloc, vm};
+
+/// Probe the device tree for a node matching one of the given compatible
+/// strings (tried in order), take its first `reg` block, and return a
+/// `PhysRange`.  Returns an error if no node or its `reg` is found.
+pub fn find_dt_physrange(
+    dt: &DeviceTree,
+    compatibles: &'static [&'static str],
+    err: &'static str,
+) -> Result<PhysRange> {
+    compatibles
+        .iter()
+        .find_map(|c| dt.find_compatible(c).next())
+        .and_then(|node| dt.property_translated_reg_iter(node).next())
+        .and_then(|reg| reg.regblock())
+        .map(|reg| PhysRange::from(&reg))
+        .ok_or(err)
+}
 
 /// Map a device register to device memory
 /// TODO Maybe make this a macro and wrap the error reporting?

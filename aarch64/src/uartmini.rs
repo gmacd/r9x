@@ -1,9 +1,9 @@
 use port::Result;
 use port::devcons::Uart;
 use port::fdt::DeviceTree;
-use port::mem::{PhysRange, VirtRange};
+use port::mem::VirtRange;
 
-use crate::deviceutil::map_device_register;
+use crate::deviceutil::{find_dt_physrange, map_device_register};
 use crate::io::{delay, read_reg, write_or_reg, write_reg};
 use crate::registers::{GPFSEL1, GPPUD, GPPUDCLK0};
 use crate::vm;
@@ -40,20 +40,20 @@ impl MiniUart {
     /// and should be replaced by a MiniUart with specifically mapped ranges *after* the VM has
     /// been set up.
     pub fn new_assuming_mapped_mmio(dt: &DeviceTree, mmio_virt_offset: usize) -> Result<MiniUart> {
-        let gpio_virtrange = Self::find_gpio_physrange(dt)
-            .map(|pr| VirtRange::from_physrange(&pr, mmio_virt_offset))?;
+        let gpio_physrange = find_dt_physrange(dt, &["brcm,bcm2835-gpio", "brcm,bcm2711-gpio"], "can't find gpio")?;
+        let gpio_virtrange = VirtRange::from_physrange(&gpio_physrange, mmio_virt_offset);
 
-        let aux_virtrange = Self::find_aux_physrange(dt)
-            .map(|pr| VirtRange::from_physrange(&pr, mmio_virt_offset))?;
+        let aux_physrange = find_dt_physrange(dt, &["brcm,bcm2835-aux"], "can't find aux")?;
+        let aux_virtrange = VirtRange::from_physrange(&aux_physrange, mmio_virt_offset);
 
-        let miniuart_virtrange = Self::find_miniuart_physrange(dt)
-            .map(|pr| VirtRange::from_physrange(&pr, mmio_virt_offset))?;
+        let miniuart_physrange = find_dt_physrange(dt, &["brcm,bcm2835-aux-uart"], "can't find miniuart")?;
+        let miniuart_virtrange = VirtRange::from_physrange(&miniuart_physrange, mmio_virt_offset);
 
         Ok(MiniUart { gpio_virtrange, aux_virtrange, miniuart_virtrange })
     }
 
     pub fn new_with_map_ranges(dt: &DeviceTree) -> Result<MiniUart> {
-        let gpio_physrange = Self::find_gpio_physrange(dt)?;
+        let gpio_physrange = find_dt_physrange(dt, &["brcm,bcm2835-gpio", "brcm,bcm2711-gpio"], "can't find gpio")?;
         let gpio_virtrange = match map_device_register("gpio", gpio_physrange, vm::PageSize::Page4K)
         {
             Ok(gpio_virtrange) => gpio_virtrange,
@@ -63,7 +63,7 @@ impl MiniUart {
             }
         };
 
-        let aux_physrange = Self::find_aux_physrange(dt)?;
+        let aux_physrange = find_dt_physrange(dt, &["brcm,bcm2835-aux"], "can't find aux")?;
         let aux_virtrange = match map_device_register("aux", aux_physrange, vm::PageSize::Page4K) {
             Ok(aux_virtrange) => aux_virtrange,
             Err(msg) => {
@@ -72,7 +72,7 @@ impl MiniUart {
             }
         };
 
-        let miniuart_physrange = Self::find_miniuart_physrange(dt)?;
+        let miniuart_physrange = find_dt_physrange(dt, &["brcm,bcm2835-aux-uart"], "can't find miniuart")?;
         let miniuart_virtrange =
             match map_device_register("miniuart", miniuart_physrange, vm::PageSize::Page4K) {
                 Ok(aux_virtrange) => aux_virtrange,
@@ -83,38 +83,6 @@ impl MiniUart {
             };
 
         Ok(MiniUart { gpio_virtrange, aux_virtrange, miniuart_virtrange })
-    }
-
-    /// Bcm2835 and bcm2711 are essentially the same for our needs here.
-    /// If fdt.rs supported aliases well, we could try to just look up 'gpio'.
-    fn find_gpio_physrange(dt: &DeviceTree) -> Result<PhysRange> {
-        dt.find_compatible("brcm,bcm2835-gpio")
-            .next()
-            .or_else(|| dt.find_compatible("brcm,bcm2711-gpio").next())
-            .and_then(|uart| dt.property_translated_reg_iter(uart).next())
-            .and_then(|reg| reg.regblock())
-            .map(|reg| PhysRange::from(&reg))
-            .ok_or("can't find gpio")
-    }
-
-    /// Find a compatible aux
-    fn find_aux_physrange(dt: &DeviceTree) -> Result<PhysRange> {
-        dt.find_compatible("brcm,bcm2835-aux")
-            .next()
-            .and_then(|uart| dt.property_translated_reg_iter(uart).next())
-            .and_then(|reg| reg.regblock())
-            .map(|reg| PhysRange::from(&reg))
-            .ok_or("can't find aux")
-    }
-
-    /// Find a compatible miniuart
-    fn find_miniuart_physrange(dt: &DeviceTree) -> Result<PhysRange> {
-        dt.find_compatible("brcm,bcm2835-aux-uart")
-            .next()
-            .and_then(|uart| dt.property_translated_reg_iter(uart).next())
-            .and_then(|reg| reg.regblock())
-            .map(|reg| PhysRange::from(&reg))
-            .ok_or("can't find miniuart")
     }
 
     pub fn init(&self) {

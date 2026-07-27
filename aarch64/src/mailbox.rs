@@ -1,6 +1,6 @@
 use core::ptr::NonNull;
 
-use crate::deviceutil::{self, map_device_register};
+use crate::deviceutil::{find_dt_physrange, map_device_register};
 use crate::io::{read_reg, write_reg};
 use crate::vm;
 use port::Result;
@@ -48,9 +48,9 @@ impl Mailbox {
         // Allocate a page of device memory for the mailbox request/response buffer
         // TODO Split this into multiple buffers to allow parallel requests.
         let (req_buf_virtrange, req_buf_physrange) =
-            deviceutil::alloc_device_page("mailboxbuf", vm::PageSize::Page4K)?;
+            crate::deviceutil::alloc_device_page("mailboxbuf", vm::PageSize::Page4K)?;
 
-        let mbox_physrange = Self::find_mbox_physrange(dt)?;
+        let mbox_physrange = find_dt_physrange(dt, &["brcm,bcm2835-mbox"], "can't find mbox")?;
         let mbox = match map_device_register("mailbox", mbox_physrange, vm::PageSize::Page4K) {
             Ok(mbox_virtrange) => {
                 Ok(Mailbox { mbox_virtrange, req_buf_virtrange, req_buf_physrange })
@@ -62,16 +62,6 @@ impl Mailbox {
         }?;
 
         Ok(mbox)
-    }
-
-    /// Get the physical range required for this device
-    fn find_mbox_physrange(dt: &DeviceTree) -> Result<PhysRange> {
-        dt.find_compatible("brcm,bcm2835-mbox")
-            .next()
-            .and_then(|uart| dt.property_translated_reg_iter(uart).next())
-            .and_then(|reg| reg.regblock())
-            .map(|reg| PhysRange::from(&reg))
-            .ok_or("can't find mbox")
     }
 
     fn request(&self) {
