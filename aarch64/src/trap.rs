@@ -10,11 +10,11 @@ core::arch::global_asm!(include_str!("trap.S"));
 pub fn init() {
     #[cfg(not(test))]
     unsafe {
-        // Set up a vector table for any exception that is taken to EL1, then enable IRQ
+        // Set up a vector table for any exception that is taken to EL1.
+        // IRQs are enabled later in main9 after GIC init completes.
         core::arch::asm!(
             "adr {tmp}, exception_vectors",
             "msr vbar_el1, {tmp}",
-            "msr DAIFClr, #2",
             tmp = out(reg) _,
         );
     }
@@ -196,49 +196,6 @@ pub extern "C" fn trap_unsafe(frame: *mut TrapFrame) {
     port::irq::exit_interrupt();
 }
 
-#[cfg(test)]
-mod tests {
-    use super::ExceptionType;
-
-    #[test]
-    fn exception_type_try_from_all_values() {
-        for v in 0..=15 {
-            let ty = ExceptionType::try_from(v);
-            assert!(ty.is_ok(), "value {v} should map to an ExceptionType; got {:?}", ty);
-        }
-        assert_eq!(ExceptionType::try_from(16), Err(()));
-        assert_eq!(ExceptionType::try_from(u64::MAX), Err(()));
-    }
-
-    #[test]
-    fn exception_type_is_irq() {
-        // IRQ vectors are odd: 1, 5, 9, 13
-        for v in [1u64, 5, 9, 13] {
-            assert!(ExceptionType::try_from(v).unwrap().is_irq(), "{v} should be an IRQ vector");
-        }
-        // All other vectors are non-IRQ
-        for v in [0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15] {
-            assert!(
-                !ExceptionType::try_from(v).unwrap().is_irq(),
-                "{v} should not be an IRQ vector"
-            );
-        }
-    }
-
-    #[test]
-    fn exception_type_repr_is_u8() {
-        assert_eq!(core::mem::size_of::<ExceptionType>(), 1);
-    }
-
-    #[test]
-    fn exception_type_debug_name() {
-        // Verify the Debug derive gives readable output
-        let t = ExceptionType::try_from(10).unwrap();
-        let debug_str = format!("{:?}", t);
-        assert_eq!(debug_str, "FiqInvalidEL0_64");
-    }
-}
-
 fn trap(frame: &mut TrapFrame) {
     let exc = match ExceptionType::try_from(frame.interrupt_type) {
         Ok(e) => e,
@@ -283,5 +240,48 @@ fn trap(frame: &mut TrapFrame) {
 
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExceptionType;
+
+    #[test]
+    fn exception_type_try_from_all_values() {
+        for v in 0..=15 {
+            let ty = ExceptionType::try_from(v);
+            assert!(ty.is_ok(), "value {v} should map to an ExceptionType; got {:?}", ty);
+        }
+        assert_eq!(ExceptionType::try_from(16), Err(()));
+        assert_eq!(ExceptionType::try_from(u64::MAX), Err(()));
+    }
+
+    #[test]
+    fn exception_type_is_irq() {
+        // IRQ vectors are odd: 1, 5, 9, 13
+        for v in [1u64, 5, 9, 13] {
+            assert!(ExceptionType::try_from(v).unwrap().is_irq(), "{v} should be an IRQ vector");
+        }
+        // All other vectors are non-IRQ
+        for v in [0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15] {
+            assert!(
+                !ExceptionType::try_from(v).unwrap().is_irq(),
+                "{v} should not be an IRQ vector"
+            );
+        }
+    }
+
+    #[test]
+    fn exception_type_repr_is_u8() {
+        assert_eq!(core::mem::size_of::<ExceptionType>(), 1);
+    }
+
+    #[test]
+    fn exception_type_debug_name() {
+        // Verify the Debug derive gives readable output
+        let t = ExceptionType::try_from(10).unwrap();
+        let debug_str = format!("{:?}", t);
+        assert_eq!(debug_str, "FiqInvalidEL0_64");
     }
 }

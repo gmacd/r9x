@@ -1,10 +1,9 @@
 // Racy to start.
 
 use crate::uartmini::MiniUart;
-use core::cell::SyncUnsafeCell;
-use core::mem::MaybeUninit;
 use port::devcons::{Console, IprintOps, Uart};
 use port::fdt::DeviceTree;
+use port::once::Once;
 #[cfg(not(test))]
 use port::println;
 // The aarch64 devcons implementation is focussed on Raspberry Pi 4 for now.
@@ -25,17 +24,19 @@ use port::println;
 // - UART2 PL011
 // - UART3 PL011
 
-static UART: SyncUnsafeCell<MaybeUninit<MiniUart>> = SyncUnsafeCell::new(MaybeUninit::uninit());
+static UART: Once<MiniUart> = Once::new();
 
 static IPRINT_OPS: IprintOps = IprintOps { putb: iputb };
 
 /// Direct polled write for iprint, bypassing the console lock.
 /// `MiniUart::putb` needs only a shared reference, so this can safely
-/// alias the reference held by the console.
+/// alias the reference held by the console.  Drops the byte if the
+/// console is not up yet — `Once` makes that a check rather than an
+/// assumption.
 fn iputb(b: u8) {
-    // Safety: IPRINT_OPS is only registered once UART is initialised.
-    let uart = unsafe { (*UART.get()).assume_init_ref() };
-    uart.putb(b);
+    if let Some(uart) = UART.get() {
+        uart.putb(b);
+    }
 }
 
 pub fn init(dt: &DeviceTree) {
@@ -47,12 +48,12 @@ pub fn init(dt: &DeviceTree) {
         match uart {
             Ok(uart) => {
                 uart.init();
-
-                unsafe {
-                    let cons = &mut *UART.get();
-                    cons.write(uart);
-                    port::devcons::set_iprint_ops(&IPRINT_OPS);
-                    Ok(cons.assume_init_ref())
+                match UART.set(uart) {
+                    Ok(uart) => {
+                        port::devcons::set_iprint_ops(&IPRINT_OPS);
+                        Ok(uart as &'static dyn Uart)
+                    }
+                    Err(_) => Err("uart already initialised"),
                 }
             }
             Err(msg) => {

@@ -72,16 +72,18 @@ impl Timer {
     }
 }
 
+// Both write the whole of CNTP_CTL_EL0 rather than read-modify-write
+// it.  IMASK must be clear or the timer counts down and sets ISTATUS
+// but never raises its PPI — an armed timer that silently never fires —
+// and firmware is not obliged to leave it that way.  ISTATUS is
+// read-only, so writing zero to it is harmless.
+
 fn timer_enable() {
-    if !cfg!(test) {
-        CntpCtlEl0::write(CntpCtlEl0::read().with_enable(true));
-    }
+    CntpCtlEl0(0).with_enable(true).write();
 }
 
 fn timer_disable() {
-    if !cfg!(test) {
-        CntpCtlEl0::write(CntpCtlEl0::read().with_enable(false));
-    }
+    CntpCtlEl0(0).write();
 }
 
 const MAX_TIMERS: usize = 8;
@@ -143,6 +145,8 @@ pub fn init() {
         panic!("timer: CNTFRQ_EL0=0: counter frequency not programmed by firmware");
     }
     TIMER_FREQ.store(freq, Ordering::Relaxed);
+
+    timer_disable();
 }
 
 fn now() -> u64 {

@@ -5,7 +5,6 @@
 #![cfg_attr(not(test), no_main)]
 #![cfg_attr(not(test), feature(alloc_error_handler))]
 #![feature(core_intrinsics)]
-#![feature(sync_unsafe_cell)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 mod allocator;
@@ -137,19 +136,31 @@ pub extern "C" fn main9(dtb_va: usize) {
 
     devcons::init(&dt);
     mailbox::init(&dt);
-    gic::init(&dt);
+
+    // Interrupt bringup, in a required order:
+    //   1. timer::init disarms CNTP_CTL_EL0 before the GIC enables the
+    //      timer PPI, so a firmware-armed timer cannot fire into a
+    //      half-built handler.
+    //   2. gic::init enables the distributor and this core's CPU
+    //      interface.  irq::init (above, before the MMU work) must
+    //      already have registered the DAIF ops IrqGuard needs.
+    //   3. IRQs are unmasked only if the GIC came up.  With no driver
+    //      published, an interrupt asserted by a prior boot stage would
+    //      be taken, find nothing to acknowledge it, and — being
+    //      level-triggered — re-fire forever.
     timer::init();
+    if gic::init(&dt).is_ok() {
+        irq::unmask_irqs();
+    }
 
     println!();
     println!("r9 from the Internet");
-
     print_stacks();
-
     print_binary_sections();
-
     print_board_info();
     print_memory_info();
 
+    // Test code
     {
         let page_table = vm::kernel_pagetable();
         let entry = Entry::rw_kernel_data();
@@ -178,6 +189,7 @@ pub extern "C" fn main9(dtb_va: usize) {
         vm::switch(vm::user_pagetable(), RootPageTableType::User);
     }
 
+    // Test code
     // test_sysexit();
 
     // vmdebug::print_recursive_tables(RootPageTableType::Kernel);

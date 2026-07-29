@@ -1,9 +1,9 @@
 use crate::Result;
 use crate::irq::IrqGuard;
 use crate::mcslock::{Lock, LockNode};
+use crate::once::Once;
 use core::fmt;
-use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 const fn ctrl(b: u8) -> u8 {
     b - b'@'
@@ -108,16 +108,16 @@ pub struct IprintOps {
     pub putb: fn(u8),
 }
 
-static IPRINT_OPS: AtomicPtr<IprintOps> = AtomicPtr::new(ptr::null_mut());
+static IPRINT_OPS: Once<&'static IprintOps> = Once::new();
 
 /// Register the direct console writer.  Call at boot once the console
 /// hardware is initialised; until then iprint output is dropped.
 pub fn set_iprint_ops(ops: &'static IprintOps) {
-    IPRINT_OPS.store(ops as *const IprintOps as *mut IprintOps, Ordering::Release);
+    let _ = IPRINT_OPS.set(ops);
 }
 
 fn iprint_ops() -> Option<&'static IprintOps> {
-    unsafe { IPRINT_OPS.load(Ordering::Acquire).as_ref() }
+    IPRINT_OPS.get().copied()
 }
 
 /// Best-effort interlock so concurrent iprints don't interleave.

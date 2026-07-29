@@ -40,20 +40,23 @@ impl MiniUart {
     /// and should be replaced by a MiniUart with specifically mapped ranges *after* the VM has
     /// been set up.
     pub fn new_assuming_mapped_mmio(dt: &DeviceTree, mmio_virt_offset: usize) -> Result<MiniUart> {
-        let gpio_physrange = find_dt_physrange(dt, &["brcm,bcm2835-gpio", "brcm,bcm2711-gpio"], "can't find gpio")?;
+        let gpio_physrange =
+            find_dt_physrange(dt, &["brcm,bcm2835-gpio", "brcm,bcm2711-gpio"], "can't find gpio")?;
         let gpio_virtrange = VirtRange::from_physrange(&gpio_physrange, mmio_virt_offset);
 
         let aux_physrange = find_dt_physrange(dt, &["brcm,bcm2835-aux"], "can't find aux")?;
         let aux_virtrange = VirtRange::from_physrange(&aux_physrange, mmio_virt_offset);
 
-        let miniuart_physrange = find_dt_physrange(dt, &["brcm,bcm2835-aux-uart"], "can't find miniuart")?;
+        let miniuart_physrange =
+            find_dt_physrange(dt, &["brcm,bcm2835-aux-uart"], "can't find miniuart")?;
         let miniuart_virtrange = VirtRange::from_physrange(&miniuart_physrange, mmio_virt_offset);
 
         Ok(MiniUart { gpio_virtrange, aux_virtrange, miniuart_virtrange })
     }
 
     pub fn new_with_map_ranges(dt: &DeviceTree) -> Result<MiniUart> {
-        let gpio_physrange = find_dt_physrange(dt, &["brcm,bcm2835-gpio", "brcm,bcm2711-gpio"], "can't find gpio")?;
+        let gpio_physrange =
+            find_dt_physrange(dt, &["brcm,bcm2835-gpio", "brcm,bcm2711-gpio"], "can't find gpio")?;
         let gpio_virtrange = match map_device_register("gpio", gpio_physrange, vm::PageSize::Page4K)
         {
             Ok(gpio_virtrange) => gpio_virtrange,
@@ -72,7 +75,8 @@ impl MiniUart {
             }
         };
 
-        let miniuart_physrange = find_dt_physrange(dt, &["brcm,bcm2835-aux-uart"], "can't find miniuart")?;
+        let miniuart_physrange =
+            find_dt_physrange(dt, &["brcm,bcm2835-aux-uart"], "can't find miniuart")?;
         let miniuart_virtrange =
             match map_device_register("miniuart", miniuart_physrange, vm::PageSize::Page4K) {
                 Ok(aux_virtrange) => aux_virtrange,

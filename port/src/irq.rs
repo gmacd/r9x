@@ -17,8 +17,9 @@
 //! privileged, `IrqGuard` is a no-op.
 
 use core::marker::PhantomData;
-use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::once::Once;
 
 // Depth rather than a flag so nested exceptions stay counted.
 // Core-local in spirit; needs to become per-core state under SMP.
@@ -47,17 +48,16 @@ pub struct IrqOps {
     pub restore: fn(u64),
 }
 
-static IRQ_OPS: AtomicPtr<IrqOps> = AtomicPtr::new(ptr::null_mut());
+static IRQ_OPS: Once<&'static IrqOps> = Once::new();
 
 /// Register the architecture's mask/restore implementation.  Call once
 /// at early boot, before interrupts are first enabled.
 pub fn set_ops(ops: &'static IrqOps) {
-    IRQ_OPS.store(ops as *const IrqOps as *mut IrqOps, Ordering::Release);
+    let _ = IRQ_OPS.set(ops);
 }
 
 fn ops() -> Option<&'static IrqOps> {
-    let ops = IRQ_OPS.load(Ordering::Acquire);
-    unsafe { ops.as_ref() }
+    IRQ_OPS.get().copied()
 }
 
 /// Masks interrupts on the current core for its lifetime, restoring the

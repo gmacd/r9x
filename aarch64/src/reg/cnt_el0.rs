@@ -1,5 +1,6 @@
 use core::fmt;
 
+use aarch64_cpu::asm::barrier;
 use aarch64_cpu::registers::{
     CNTFRQ_EL0, CNTP_CTL_EL0, CNTP_CVAL_EL0, CNTPCT_EL0, Readable, Writeable,
 };
@@ -74,6 +75,13 @@ impl CntpCtlEl0 {
     pub fn write(self) {
         if !cfg!(test) {
             CNTP_CTL_EL0.set(self.0);
+            // A direct system-register write is not guaranteed to have
+            // reached the timer's interrupt output until a context
+            // synchronisation event.  Callers disarm the timer and then
+            // immediately EOI at the GIC, so without this the EOI can
+            // race the deassert and the level-triggered PPI re-fires.
+            // Linux does the same (arch/arm64/include/asm/arch_timer.h).
+            barrier::isb(barrier::SY);
         }
     }
 }
