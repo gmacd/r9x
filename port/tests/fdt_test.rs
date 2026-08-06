@@ -29,7 +29,7 @@ fn traverse_tree() {
     assert_eq!(dt.node_name(&root).unwrap(), "");
     assert_eq!(root.depth(), 0);
 
-    let aliases = dt.children(&root).nth(0).unwrap();
+    let aliases = dt.children(&root).next().unwrap();
     assert_eq!(dt.node_name(&aliases).unwrap(), "aliases");
     assert_eq!(aliases.depth(), 1);
 

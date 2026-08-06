@@ -764,23 +764,48 @@ impl ClippyStep {
     }
 
     fn run(self) -> Result<()> {
-        let mut cmd = Command::new(cargo());
-        cmd.arg("clippy");
-
-        apply_to_clippy_step(&mut cmd, &self.config);
-
-        cmd.current_dir(workspace());
+        // Libs and bins, linted the way the kernel is built.
+        let mut cmd = self.command();
         cmd.arg("--workspace");
         exclude_other_arches(self.arch, &mut cmd);
+        self.lint(cmd)?;
+
+        // Tests and benches are separate targets and are not covered above.
+        // port's build like any host library.
+        let mut cmd = self.command();
+        cmd.arg("--package").arg("port").arg("--tests").arg("--benches");
+        self.lint(cmd)?;
+
+        // The arch packages' tests need std, so they need an OS-specific
+        // toolchain; where none is installed, skip them as check does.
+        let package = self.arch.to_string().to_lowercase();
+        if let Some(target) = RustupState::new().std_supported_target(&package) {
+            let mut cmd = self.command();
+            cmd.arg("--package").arg(&package).arg("--tests").arg("--benches");
+            cmd.arg("--target").arg(target.to_string());
+            self.lint(cmd)?;
+        }
+        Ok(())
+    }
+
+    /// A clippy invocation carrying the configured cfgs and the build profile.
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(cargo());
+        cmd.arg("clippy");
+        apply_to_clippy_step(&mut cmd, &self.config);
+        cmd.current_dir(workspace());
         if self.profile == Profile::Release {
             cmd.arg("--release");
         }
+        cmd
+    }
+
+    fn lint(&self, mut cmd: Command) -> Result<()> {
         cmd.arg("--").arg("-Dwarnings");
         if self.verbose {
             println!("Executing {cmd:?}");
         }
-        let status = annotated_status(&mut cmd)?;
-        if !status.success() {
+        if !annotated_status(&mut cmd)?.success() {
             return Err("clippy failed".into());
         }
         Ok(())
