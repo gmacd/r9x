@@ -142,58 +142,41 @@ fn apply_platform_config(cmd: &mut Command, rustflags: &mut Vec<String>, config:
         }
 
         if let Some(platform) = &config.platform {
-            rustflags.push("--cfg".into());
-            rustflags.push(format!("platform=\"{platform}\""));
+            push_cfg(rustflags, &format!("platform=\"{platform}\""));
         }
 
-        if let Some(devices) = &config.dev {
-            // get all [config] 'dev' settings
-            for dev in devices {
-                rustflags.push("--cfg".into());
-
-                // prefix the setting
-                rustflags.push(format!("dev_{dev}"));
+        // Each section name prefixes the settings it contains: a 'dev' entry
+        // 'arch' becomes dev_arch.
+        for (prefix, settings) in [
+            ("dev", &config.dev),
+            ("ip", &config.ip),
+            ("link", &config.link),
+            ("nodev", &config.nodev),
+            ("nouart", &config.nouart),
+        ] {
+            for setting in settings.iter().flatten() {
+                push_cfg(rustflags, &format!("{prefix}_{setting}"));
             }
         }
+    }
+}
 
-        if let Some(ips) = &config.ip {
-            // get all [config] 'ip' settings
-            for ip in ips {
-                rustflags.push("--cfg".into());
+/// Set a cfg and declare it in the same breath, so that a `#[cfg(...)]` naming
+/// something no config file sets is a build error rather than silently dead
+/// code.  Every cfg the build injects is declared here and nowhere else.
+fn push_cfg(rustflags: &mut Vec<String>, cfg: &str) {
+    rustflags.push("--cfg".into());
+    rustflags.push(cfg.to_string());
+    rustflags.push("--check-cfg".into());
+    rustflags.push(check_cfg(cfg));
+}
 
-                // prefix the setting
-                rustflags.push(format!("ip_{ip}"));
-            }
-        }
-        if let Some(links) = &config.link {
-            // get all [config] 'link' settings
-            for link in links {
-                rustflags.push("--cfg".into());
-
-                // prefix the setting
-                rustflags.push(format!("link_{link}"));
-            }
-        }
-
-        if let Some(nodevs) = &config.nodev {
-            // get all [config] 'nodev' settings
-            for nodev in nodevs {
-                rustflags.push("--cfg".into());
-
-                // prefix the setting
-                rustflags.push(format!("nodev_{nodev}"));
-            }
-        }
-
-        if let Some(nouarts) = &config.nouart {
-            // get all [config] 'nodev' settings
-            for nouart in nouarts {
-                rustflags.push("--cfg".into());
-
-                // prefix the setting
-                rustflags.push(format!("nouart_{nouart}"));
-            }
-        }
+/// Render `name` or `name="value"` as the matching --check-cfg expression.
+/// No spaces: rustflags are passed as one string and split on whitespace.
+fn check_cfg(cfg: &str) -> String {
+    match cfg.split_once('=') {
+        Some((name, value)) => format!("cfg({name},values({value}))"),
+        None => format!("cfg({cfg})"),
     }
 }
 
