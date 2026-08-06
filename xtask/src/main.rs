@@ -46,6 +46,9 @@ enum Arch {
 }
 
 impl Arch {
+    /// Every architecture r9 supports, in the order the gates run them.
+    const ALL: [Arch; 3] = [Arch::Aarch64, Arch::Riscv64, Arch::X86_64];
+
     fn from(matches: &clap::ArgMatches) -> Self {
         *matches.get_one::<Arch>("arch").unwrap_or(&Arch::X86_64)
     }
@@ -189,6 +192,23 @@ fn main() {
             clap::arg!(--json "Output messages as json"),
             clap::arg!(--verbose "Print commands"),
         ]))
+        .subcommand(clap::Command::new("fmt").about("Runs rustfmt over the workspace").args(&[
+            clap::arg!(--check "Check formatting without rewriting files"),
+            clap::arg!(--verbose "Print commands"),
+        ]))
+        .subcommand(
+            clap::Command::new("ci")
+                .about("Runs fmt, check, clippy (all arches) and test")
+                .args(&[
+                    clap::arg!(--release "Build a release version").conflicts_with("debug"),
+                    clap::arg!(--debug "Build a debug version").conflicts_with("release"),
+                    clap::arg!(--fix "Reformat in place rather than failing on badly formatted code"),
+                    clap::arg!(--config <name> "Configuration")
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .default_value("default"),
+                    clap::arg!(--verbose "Print commands"),
+                ]),
+        )
         .subcommand(
             clap::Command::new("qemu").about("Run r9 under QEMU").args(&[
                 clap::arg!(--release "Build a release version").conflicts_with("debug"),
@@ -220,6 +240,8 @@ fn main() {
         Some(("test", m)) => TestStep::new(m).run(),
         Some(("clippy", m)) => ClippyStep::new(m).run(),
         Some(("check", m)) => CheckStep::new(m).run(),
+        Some(("fmt", m)) => FmtStep::new(m).run(),
+        Some(("ci", m)) => CiStep::new(m).run(),
         Some(("qemu", m)) => {
             let s1 = BuildStep::new(m);
             let s2 = DistStep::new(m);
@@ -273,11 +295,15 @@ fn objcopy() -> String {
 fn load_config(arch: Arch, matches: &clap::ArgMatches) -> Configuration {
     let default = "default".to_string();
     let config_file = matches.try_get_one("config").ok().flatten().unwrap_or(&default);
+    load_named_config(arch, config_file)
+}
+
+fn load_named_config(arch: Arch, name: &str) -> Configuration {
     Configuration::load(format!(
         "{}/{}/lib/config_{}.toml",
         workspace().display(),
         arch.to_string().to_lowercase(),
-        config_file
+        name
     ))
 }
 
@@ -733,6 +759,10 @@ impl ClippyStep {
         Self { arch, config, profile, verbose }
     }
 
+    fn for_arch(arch: Arch, config_name: &str, profile: Profile, verbose: bool) -> Self {
+        Self { arch, config: load_named_config(arch, config_name), profile, verbose }
+    }
+
     fn run(self) -> Result<()> {
         let mut cmd = Command::new(cargo());
         cmd.arg("clippy");
@@ -848,6 +878,82 @@ impl CheckStep {
         }
         Ok(())
     }
+}
+
+/// Run rustfmt over every package in the workspace.
+struct FmtStep {
+    check: bool,
+    verbose: bool,
+}
+
+impl FmtStep {
+    fn new(matches: &clap::ArgMatches) -> Self {
+        let check = matches.get_flag("check");
+        let verbose = verbose(matches);
+
+        Self { check, verbose }
+    }
+
+    fn run(self) -> Result<()> {
+        let mut cmd = Command::new(cargo());
+        cmd.current_dir(workspace());
+        cmd.arg("fmt").arg("--all");
+        if self.check {
+            cmd.arg("--check");
+        }
+        if self.verbose {
+            println!("Executing {cmd:?}");
+        }
+        let status = annotated_status(&mut cmd)?;
+        if !status.success() {
+            return Err("fmt failed".into());
+        }
+        Ok(())
+    }
+}
+
+/// Run every gate the tree is expected to pass: formatting, check across all
+/// arches, clippy for each arch in turn, and the unit tests.
+struct CiStep {
+    config_name: String,
+    profile: Profile,
+    fix: bool,
+    verbose: bool,
+}
+
+impl CiStep {
+    fn new(matches: &clap::ArgMatches) -> Self {
+        let config_name =
+            matches.get_one::<String>("config").expect("config has a default").clone();
+        let profile = Profile::from(matches);
+        let fix = matches.get_flag("fix");
+        let verbose = verbose(matches);
+
+        Self { config_name, profile, fix, verbose }
+    }
+
+    fn run(self) -> Result<()> {
+        heading("fmt");
+        FmtStep { check: !self.fix, verbose: self.verbose }.run()?;
+
+        heading("check");
+        CheckStep { json_output: false, verbose: self.verbose }.run()?;
+
+        for arch in Arch::ALL {
+            heading(&format!("clippy {arch}"));
+            ClippyStep::for_arch(arch, &self.config_name, self.profile, self.verbose).run()?;
+        }
+
+        heading("test");
+        TestStep { json_output: false, verbose: self.verbose }.run()?;
+
+        heading("ok");
+        Ok(())
+    }
+}
+
+fn heading(step: &str) {
+    println!("\n=== xtask: {step} ===");
 }
 
 struct CleanStep {}

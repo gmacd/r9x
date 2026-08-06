@@ -7,6 +7,8 @@ The project is designed for multi-core SMP. All concurrency primitives, initiali
 The project must be free of errors and warnings at all times, including those from check and clippy, and for all supported architectures.  All tests must pass.
 
 ## Commands
+- All gates at once (fmt, check, clippy for every arch, test):
+  - `cargo xtask ci` (add `--fix` to reformat in place instead of failing on formatting)
 - Build:
   - aarch64: `cargo xtask dist --arch aarch64`
   - riscv64: `cargo xtask dist --arch riscv64`
@@ -19,3 +21,5 @@ The project must be free of errors and warnings at all times, including those fr
   - x86-64: `cargo xtask clippy --arch x86-64`
 - Test:
   - `cargo xtask test`
+- Format:
+  - `cargo xtask fmt` (`--check` to verify without rewriting)
