@@ -1,4 +1,4 @@
-#![feature(alloc_error_handler)]
+#![cfg_attr(not(test), feature(alloc_error_handler))]
 #![feature(sync_unsafe_cell)]
 #![cfg_attr(not(any(test)), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -32,6 +32,8 @@ pub extern "C" fn main9(hartid: usize, dtb_ptr: usize) -> ! {
 
     #[cfg(not(test))]
     sbi::shutdown();
+
     #[cfg(test)]
+    #[allow(clippy::empty_loop)]
     loop {}
 }
