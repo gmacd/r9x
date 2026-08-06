@@ -2,6 +2,31 @@
 resolver = "2"
 members = ["aarch64", "x86_64", "port", "riscv64", "xtask"]
 
+[workspace.lints.rust]
+# Kernel code must spell out every unsafe operation, even inside an unsafe fn.
+unsafe_op_in_unsafe_fn = "forbid"
+# The build injects --cfg from lib/config_*.toml; a typo there silently drops code.
+unexpected_cfgs = { level = "deny", check-cfg = [
+    'cfg(platform, values("nezha", "virt"))',
+] }
+meta_variable_misuse = "warn"
+non_ascii_idents = "deny"
+single_use_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+# Pointer and cast hygiene: each of these is a plausible source of UB in a kernel.
+as_ptr_cast_mut = "deny"
+fn_to_numeric_cast_any = "deny"
+mem_forget = "deny"
+mixed_read_write_in_expression = "warn"
+deref_by_slicing = "warn"
+used_underscore_binding = "warn"
+match_same_arms = "warn"
+unnested_or_patterns = "warn"
+verbose_bit_mask = "warn"
+
 [profile.dev]
 panic = "abort"
 opt-level = 1

@@ -12,8 +12,5 @@ sbi-rt = "0.0.3"
 
 [features]
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(platform, values("nezha"))',
-    'cfg(platform, values("virt"))',
-] }
+[lints]
+workspace = true
