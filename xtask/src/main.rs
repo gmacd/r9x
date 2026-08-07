@@ -698,34 +698,29 @@ impl TestStep {
     }
 
     fn run(self) -> Result<()> {
-        let mut all_cmd_args = Vec::new();
-
-        all_cmd_args.push(vec![
-            "test".to_string(),
-            "--package".to_string(),
-            "port".to_string(),
-            "--lib".to_string(),
-        ]);
-
+        // Tests need std, and the arch packages set a bare-metal
+        // default-target that has no std, so spell the host out.
+        let host = std::env::consts::ARCH;
         let rustup_state = RustupState::new();
+        let Some(target) = rustup_state.std_supported_target(host) else {
+            return Err(format!("no target with std is installed for {host}").into());
+        };
 
-        let arch = std::env::consts::ARCH;
-        if let Some(target) = rustup_state.std_supported_target(arch) {
-            all_cmd_args.push(vec![
-                "test".to_string(),
-                "--package".to_string(),
-                arch.to_string(),
-                "--bins".to_string(),
-                "--target".to_string(),
-                target.to_string(),
-            ]);
+        // port and aarch64 build for any host, so their tests run
+        // everywhere.  riscv64 and x86_64 build only for their own
+        // architecture -- their inline asm, and riscv64's sbi-rt dependency,
+        // do not assemble elsewhere -- so run them only natively.  Neither
+        // has any tests today.
+        let mut packages = vec!["port", "aarch64"];
+        if ["riscv64", "x86_64"].contains(&host) {
+            packages.push(host);
         }
 
-        for cmd_args in all_cmd_args {
+        for package in packages {
             let mut cmd = Command::new(cargo());
             cmd.current_dir(workspace());
 
-            cmd.args(cmd_args);
+            cmd.args(["test", "--package", package, "--tests", "--target", &target.to_string()]);
             if self.json_output {
                 cmd.arg("--message-format=json").arg("--quiet");
             }
