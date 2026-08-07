@@ -22,6 +22,7 @@ jobs:
             ~/.rustup/update-hashes
             ~/.rustup/settings.toml
           key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Format, check, clippy (all arches) and test
         run: cargo xtask ci --verbose
 
@@ -37,6 +38,7 @@ jobs:
             ~/.rustup/update-hashes
             ~/.rustup/settings.toml
           key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build
         run: cargo xtask build --arch x86-64 --verbose
 
@@ -52,6 +54,7 @@ jobs:
             ~/.rustup/update-hashes
             ~/.rustup/settings.toml
           key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build
         run: cargo xtask build --arch aarch64 --verbose
 
@@ -67,5 +70,6 @@ jobs:
             ~/.rustup/update-hashes
             ~/.rustup/settings.toml
           key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build
         run: cargo xtask build --arch riscv64 --verbose
