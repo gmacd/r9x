@@ -6,8 +6,8 @@ targets = [
     "aarch64-unknown-none",
     "riscv64gc-unknown-none-elf",
     "x86_64-unknown-none",
-    # For running tests and benches
+    # For checking aarch64's tests and benches, which need std, on a host
+    # that is not aarch64.  riscv64 and x86_64 have no tests and do not
+    # build for a foreign host, so they get no such target.
     "aarch64-unknown-linux-gnu",
-    "riscv64gc-unknown-linux-gnu",
-    "x86_64-unknown-linux-gnu",
 ]
