@@ -1094,19 +1094,21 @@ impl IntegrationTestStep {
             for name in &tests {
                 println!("\n--- {arch} {name} ---");
                 ran += 1;
-                // An image that will not build is that image failing, the
+                // An image that will not compile is that image failing, the
                 // same as a non-zero exit or a timeout.  Aborting here would
                 // hide every later image.
-                let image = match runner.build(name) {
-                    Ok(image) => image,
+                let elf = match runner.compile(name) {
+                    Ok(elf) => elf,
                     Err(err) => {
                         println!("{arch} {name}: FAILED ({err})");
                         failed.push(format!("{arch} {name}"));
                         continue;
                     }
                 };
-                // A qemu that will not start, by contrast, says nothing
-                // about the image and will say the same for all of them.
+                // Laying the image out and starting qemu, by contrast, use
+                // host tools that say nothing about this image and will say
+                // the same for every one of them.
+                let image = runner.image(name, &elf)?;
                 match runner.qemu(&image)? {
                     Some(0) => println!("{arch} {name}: ok"),
                     Some(code) => {
@@ -1226,9 +1228,11 @@ impl ArchIntegrationTests {
         self.arch.to_string().to_lowercase()
     }
 
-    /// Build one test and turn it into an image QEMU will boot, the same
-    /// way DistStep does for the kernel.
-    fn build(&self, name: &str) -> Result<PathBuf> {
+    /// Compile one test image, returning the ELF cargo produced.
+    ///
+    /// Kept apart from [`Self::image`] because only this part can fail on
+    /// account of the test itself.
+    fn compile(&self, name: &str) -> Result<PathBuf> {
         let mut cmd = Command::new(cargo());
         cmd.arg("build");
         apply_to_build_step(
@@ -1253,15 +1257,22 @@ impl ArchIntegrationTests {
         if self.verbose {
             println!("Executing {cmd:?}");
         }
-        let elf = built_test_binary(&mut cmd, name)?;
+        built_test_binary(&mut cmd, name)
+    }
 
+    /// Turn a compiled test into an image QEMU will boot, the same way
+    /// DistStep does for the kernel.
+    ///
+    /// Everything here is a host tool.  If one is missing or broken it is
+    /// missing for every image, so a failure says nothing about the test.
+    fn image(&self, name: &str, elf: &Path) -> Result<PathBuf> {
         let out = workspace().join("target").join(self.arch.target()).join(self.profile.dir());
 
         // QEMU needs a flat binary to handle the device tree correctly,
         // and takes it gzipped, exactly as for the kernel.
         let flat = out.join(format!("{name}-qemu"));
         let mut cmd = Command::new(objcopy());
-        cmd.arg("-O").arg("binary").arg(&elf).arg(&flat);
+        cmd.arg("-O").arg("binary").arg(elf).arg(&flat);
         if !annotated_status(&mut cmd)?.success() {
             return Err("objcopy failed".into());
         }
