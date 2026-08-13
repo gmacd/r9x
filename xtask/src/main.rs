@@ -748,12 +748,18 @@ impl TestStep {
             let mut cmd = Command::new(cargo());
             cmd.current_dir(workspace());
 
-            // The arch crates' tests are all in the library, and their
-            // binaries cannot be built for a host: the boot assembly is
-            // only assembled for the bare metal target.  port is a library
-            // with integration tests, which --tests picks up and --lib
-            // would miss.
-            let targets = if package == "port" { "--tests" } else { "--lib" };
+            // What there is to test differs by package.  port is a host
+            // library with integration tests, which --tests picks up and
+            // --lib would miss.  aarch64's tests are all in its library,
+            // and its binary cannot be built for a host: the boot assembly
+            // is only assembled for the bare metal target.  riscv64 and
+            // x86_64 have no library at all, so --lib is not a narrower
+            // selection there but an error.
+            let targets = match package {
+                "port" => "--tests",
+                "aarch64" => "--lib",
+                _ => "--bins",
+            };
             cmd.args(["test", "--package", package, targets, "--target", &target.to_string()]);
             if self.json_output {
                 cmd.arg("--message-format=json").arg("--quiet");
