@@ -4,11 +4,11 @@ use crate::reg::esr_el1::EsrEl1;
 use crate::{gic, timer};
 use port::iprintln;
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(include_str!("trap.S"));
 
 pub fn init() {
-    #[cfg(not(test))]
+    #[cfg(target_os = "none")]
     unsafe {
         // Set up a vector table for any exception that is taken to EL1.
         // IRQs are enabled later in main9 after GIC init completes.
@@ -189,8 +189,13 @@ impl TrapFrame {
     }
 }
 
+/// Entry point called from the vector table in trap.S.
+///
+/// # Safety
+/// `frame` must point to a `TrapFrame` the vector code has just pushed,
+/// valid for the duration of the call.  Called only from assembly.
 #[unsafe(no_mangle)]
-pub extern "C" fn trap_unsafe(frame: *mut TrapFrame) {
+pub unsafe extern "C" fn trap_unsafe(frame: *mut TrapFrame) {
     port::irq::enter_interrupt();
     unsafe { trap(frame.as_mut().unwrap()) }
     port::irq::exit_interrupt();

@@ -1,11 +1,10 @@
-#![cfg(not(test))]
+#![cfg(target_os = "none")]
 
 extern crate alloc;
 
 use alloc::alloc::Layout;
 use core::panic::PanicInfo;
 
-#[cfg(not(test))]
 use port::iprintln;
 
 // TODO

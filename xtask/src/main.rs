@@ -720,7 +720,13 @@ impl TestStep {
             let mut cmd = Command::new(cargo());
             cmd.current_dir(workspace());
 
-            cmd.args(["test", "--package", package, "--tests", "--target", &target.to_string()]);
+            // The arch crates' tests are all in the library, and their
+            // binaries cannot be built for a host: the boot assembly is
+            // only assembled for the bare metal target.  port is a library
+            // with integration tests, which --tests picks up and --lib
+            // would miss.
+            let targets = if package == "port" { "--tests" } else { "--lib" };
+            cmd.args(["test", "--package", package, targets, "--target", &target.to_string()]);
             if self.json_output {
                 cmd.arg("--message-format=json").arg("--quiet");
             }

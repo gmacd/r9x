@@ -17,7 +17,7 @@ use port::{
     pagealloc::PageAllocError,
 };
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 use port::println;
 
 //static mut KERNEL_PAGETABLE: RootPageTable = RootPageTable::empty();
@@ -532,6 +532,13 @@ pub fn root_page_table(pgtype: RootPageTableType) -> &'static mut RootPageTable 
     unsafe { &mut *physaddr_as_ptr_mut_offset_from_kzero::<RootPageTable>(page_table_pa) }
 }
 
+/// Write the recursive entry into the statically allocated user root page
+/// table.
+///
+/// # Safety
+/// Must be called before the user page table is installed in TTBR0, and
+/// only once: it overwrites the recursive slot, so calling it while the
+/// table is live invalidates the mapping the MMU is walking.
 pub unsafe fn init_user_page_tables() {
     unsafe { init_empty_root_page_table(user_pagetable()) };
 }
@@ -556,7 +563,7 @@ pub enum RootPageTableType {
 
 /// Return the root user-level page table physical address
 fn ttbr0_el1() -> PhysAddr {
-    #[cfg(not(test))]
+    #[cfg(target_os = "none")]
     {
         let mut addr: u64;
         unsafe {
@@ -564,13 +571,13 @@ fn ttbr0_el1() -> PhysAddr {
         }
         PhysAddr::new(addr)
     }
-    #[cfg(test)]
+    #[cfg(not(target_os = "none"))]
     PhysAddr::new(0)
 }
 
 /// Return the root kernel page table physical address
 fn ttbr1_el1() -> PhysAddr {
-    #[cfg(not(test))]
+    #[cfg(target_os = "none")]
     {
         let mut addr: u64;
         unsafe {
@@ -578,14 +585,21 @@ fn ttbr1_el1() -> PhysAddr {
         }
         PhysAddr::new(addr)
     }
-    #[cfg(test)]
+    #[cfg(not(target_os = "none"))]
     PhysAddr::new(0)
 }
 
+/// Install `page_table` in TTBR0 or TTBR1 according to `pgtype`.
+///
+/// # Safety
+/// `page_table` must be a fully constructed root page table that remains
+/// live for as long as it is installed.  A kernel table must map the code
+/// currently executing and its stack, or the next instruction fetch
+/// faults.
 // TODO this should just call invalidate_all_tlb_entries afterwards?
 #[allow(unused_variables)]
 pub unsafe fn switch(page_table: &RootPageTable, pgtype: RootPageTableType) {
-    #[cfg(not(test))]
+    #[cfg(target_os = "none")]
     unsafe {
         let pt_phys = from_ptr_to_physaddr_offset_from_kzero(page_table).addr();
         // https://forum.osdev.org/viewtopic.php?t=36412&p=303237
@@ -612,9 +626,15 @@ pub unsafe fn switch(page_table: &RootPageTable, pgtype: RootPageTableType) {
     }
 }
 
+/// Invalidate every TLB entry for EL1, and wait for it to complete.
+///
+/// # Safety
+/// Discards cached translations for all address spaces, so the page tables
+/// they were derived from must describe a mapping that can still execute
+/// the caller.
 #[allow(unused_variables)]
 pub unsafe fn invalidate_all_tlb_entries() {
-    #[cfg(not(test))]
+    #[cfg(target_os = "none")]
     unsafe {
         // https://forum.osdev.org/viewtopic.php?t=36412&p=303237
         core::arch::asm!(

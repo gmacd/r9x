@@ -1,6 +1,6 @@
 use core::fmt;
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(include_str!("swtch.S"));
 
 #[derive(Copy, Clone)]
@@ -54,5 +54,11 @@ impl fmt::Debug for Context {
 }
 
 unsafe extern "C" {
+    // Nothing calls this yet: the user_process test stops short of the
+    // switch, because the syscall handler it would land in never returns.
+    // The expectation fails as soon as something does call it, as a prompt
+    // to drop the attribute -- and to make this pub, which a test image
+    // taking the switch would need.
+    #[expect(dead_code)]
     pub(crate) fn swtch(from: *mut *mut Context, to: &Context);
 }

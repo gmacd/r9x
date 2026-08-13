@@ -1,53 +1,24 @@
+//! The kernel binary: the boot sequence, and nothing else.  Everything it
+//! calls lives in the `aarch64` library, so that integration tests can link
+//! the same code and run a shorter sequence of their own.
 #![allow(clippy::too_many_arguments)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(internal_features)]
-#![cfg_attr(not(any(test)), no_std)]
+#![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(not(test), no_main)]
-#![cfg_attr(not(test), feature(alloc_error_handler))]
-#![feature(core_intrinsics)]
-#![forbid(unsafe_op_in_unsafe_fn)]
-
-mod allocator;
-mod devcons;
-mod deviceutil;
-mod gic;
-mod io;
-mod irq;
-mod kmem;
-mod mailbox;
-mod pagealloc;
-mod param;
-mod pre_mmu;
-mod reg;
-mod registers;
-mod swtch;
-mod timer;
-mod trap;
-mod uartmini;
-mod uartpl011;
-mod vm;
-mod vmdebug;
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use core::ptr::null_mut;
-use core::time::Duration;
-use param::KZERO;
-use port::fdt::DeviceTree;
-use port::mem::{PhysAddr, PhysRange, VirtRange};
-use port::{iprintln, println};
-use timer::{Timer, TimerCallback};
-use vm::{Entry, RootPageTableType, VaMapping};
-
-use crate::kmem::{
+use aarch64::kmem::{
     boottext_physrange, bss_physrange, data_physrange, rodata_physrange, text_physrange,
     total_kernel_physrange,
 };
-use crate::vm::PageSize;
-
-#[cfg(not(test))]
-core::arch::global_asm!(include_str!("l.S"));
+use aarch64::param::KZERO;
+use aarch64::timer::{Timer, TimerCallback};
+use aarch64::vm::{Entry, RootPageTableType, VaMapping};
+use aarch64::{boot, mailbox, pagealloc, vm};
+use alloc::boxed::Box;
+use core::time::Duration;
+use port::mem::{PhysRange, VirtRange};
+use port::{iprintln, println};
 
 fn print_memory_range(name: &str, range: &PhysRange) {
     let size = range.size();
@@ -115,26 +86,15 @@ fn print_stacks() {
 /// assumed to be dtb_va-KZERO.
 #[unsafe(no_mangle)]
 pub extern "C" fn main9(dtb_va: usize) {
-    irq::init();
-    trap::init();
+    boot::irq_ops();
 
     // Parse the DTB before we set up memory so we can correctly map it
-    let dt = unsafe { DeviceTree::from_usize(dtb_va).unwrap() };
-    let dtb_physrange = PhysRange::with_pa_len(PhysAddr::new((dtb_va - KZERO) as u64), dt.size());
-
-    // Set up page allocator
-    let mut physranges = [
-        dtb_physrange.round(PageSize::Page4K.size()),
-        boottext_physrange().add(&text_physrange()),
-        rodata_physrange(),
-        data_physrange().add(&bss_physrange()),
-    ];
-    physranges.sort_by_key(|a| a.start);
-    if let Err(err) = pagealloc::init_page_allocator(&dt, physranges.into_iter()) {
-        panic!("error:Couldn't mark unused pages as free: err: {:?}", err);
+    let dt = unsafe { boot::device_tree(dtb_va) };
+    if let Err(err) = boot::page_allocator(&dt, dtb_va) {
+        panic!("couldn't init page allocator: {err:?}");
     }
 
-    devcons::init(&dt);
+    boot::console(&dt);
     mailbox::init(&dt);
 
     // Interrupt bringup, in a required order:
@@ -142,16 +102,13 @@ pub extern "C" fn main9(dtb_va: usize) {
     //      timer PPI, so a firmware-armed timer cannot fire into a
     //      half-built handler.
     //   2. gic::init enables the distributor and this core's CPU
-    //      interface.  irq::init (above, before the MMU work) must
+    //      interface.  boot::irq_ops (above, before the MMU work) must
     //      already have registered the DAIF ops IrqGuard needs.
     //   3. IRQs are unmasked only if the GIC came up.  With no driver
     //      published, an interrupt asserted by a prior boot stage would
     //      be taken, find nothing to acknowledge it, and — being
     //      level-triggered — re-fire forever.
-    timer::init();
-    if gic::init(&dt).is_ok() {
-        irq::unmask_irqs();
-    }
+    boot::interrupts(&dt);
 
     println!();
     println!("r9 from the Internet");
@@ -189,9 +146,6 @@ pub extern "C" fn main9(dtb_va: usize) {
         vm::switch(vm::user_pagetable(), RootPageTableType::User);
     }
 
-    // Test code
-    // test_sysexit();
-
     // vmdebug::print_recursive_tables(RootPageTableType::Kernel);
     // vmdebug::print_recursive_tables(RootPageTableType::User);
 
@@ -206,8 +160,6 @@ pub extern "C" fn main9(dtb_va: usize) {
     #[allow(clippy::empty_loop)]
     loop {}
 }
-
-mod runtime;
 
 // Temp, test-related code
 
@@ -257,62 +209,4 @@ static PC2_TIMER: Timer = Timer::periodic(Duration::from_secs(2), &PC2);
 static STOP_PC1: CancelTimer = CancelTimer { victim: &PC1_TIMER, msg: "stopping pc1" };
 static STOP_PC1_TIMER: Timer = Timer::new(Duration::from_secs(5), &STOP_PC1);
 
-#[allow(dead_code)]
-fn test_sysexit() {
-    let page_table = vm::user_pagetable();
-
-    // Allocate pages for a user process
-    let user_text = {
-        let user_text = pagealloc::allocate_virtpage(
-            page_table,
-            "usertext",
-            Entry::rw_user_text(),
-            VaMapping::Addr(0x1000),
-            RootPageTableType::User,
-        )
-        .expect("couldn't allocate user_text");
-
-        // Machine code and assembly to call syscall exit
-        //   00 00 80 D2    ; mov x0, #0
-        //   21 00 80 D2    ; mov x1, #1
-        //   61 00 00 D4    ; svc #3
-        let proc_text_bytes: [u8; 12] =
-            [0x00, 0x00, 0x80, 0xd2, 0x21, 0x00, 0x80, 0xd2, 0x61, 0x00, 0x00, 0xd4];
-        user_text.0[..proc_text_bytes.len()].copy_from_slice(&proc_text_bytes);
-        user_text
-    };
-    let user_text_va = user_text as *const _ as u64;
-
-    let user_stack = pagealloc::allocate_virtpage(
-        page_table,
-        "userstack",
-        Entry::rw_user_data(),
-        VaMapping::Addr(KZERO - 0x1000),
-        RootPageTableType::User,
-    )
-    .expect("couldn't allocate user_stack");
-
-    // Executing user process!
-    println!("Executing user process");
-    let proc_stack = unsafe { core::slice::from_raw_parts_mut(user_stack, 4096) };
-
-    // Initialise a Context struct on the process stack, at the end of the proc_stack_buffer.
-    let ps_addr = &proc_stack as *const _ as u64;
-    let proc_stack_initial_ctx = ps_addr + (4096 - size_of::<swtch::Context>()) as u64;
-    let proc_context_ptr: *mut swtch::Context = proc_stack_initial_ctx as *mut swtch::Context;
-
-    // Need to push a context object onto the stack, with x30 populated at the
-    // address of proc_textbuf
-    let proc_context_ref: &mut swtch::Context = unsafe { &mut *proc_context_ptr };
-    proc_context_ref.set_stack_pointer(&proc_context_ptr as *const _ as u64);
-    proc_context_ref.set_return(user_text_va);
-
-    let mut kernel_context: *mut swtch::Context = null_mut();
-    let kernel_context_ptr: *mut *mut swtch::Context = &mut kernel_context;
-
-    //println!("proc ctx: {:#?}", proc_context_ref);
-
-    unsafe { swtch::swtch(kernel_context_ptr, &*proc_context_ptr) };
-
-    //println!("x30: {:#016x}", proc_context_ref.x30);
-}
+// User process setup now lives in aarch64/tests/user_process.rs.
