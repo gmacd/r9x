@@ -2,9 +2,11 @@ use crate::config::Configuration;
 use config::{apply_to_build_step, apply_to_clippy_step, apply_to_qemu_step};
 use std::{
     env, fmt,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{self, Command},
     str::FromStr,
+    time::Duration,
 };
 use target_lexicon::Triple;
 
@@ -192,6 +194,23 @@ fn main() {
             clap::arg!(--json "Output messages as json"),
             clap::arg!(--verbose "Print commands"),
         ]))
+        .subcommand(
+            clap::Command::new("integration-test")
+                .about("Runs the QEMU integration tests for an architecture")
+                .args(&[
+                    clap::arg!(--release "Build a release version").conflicts_with("debug"),
+                    clap::arg!(--debug "Build a debug version").conflicts_with("release"),
+                    clap::arg!(--arch <arch> "Target architecture")
+                        .value_parser(clap::builder::EnumValueParser::<Arch>::new()),
+                    clap::arg!(--config <name> "Configuration")
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .default_value("default"),
+                    clap::arg!(--timeout <secs> "Seconds before an image is considered hung")
+                        .value_parser(clap::value_parser!(u64))
+                        .default_value(DEFAULT_TIMEOUT_SECS),
+                    clap::arg!(--verbose "Print commands"),
+                ]),
+        )
         .subcommand(clap::Command::new("fmt").about("Runs rustfmt over the workspace").args(&[
             clap::arg!(--check "Check formatting without rewriting files"),
             clap::arg!(--verbose "Print commands"),
@@ -240,6 +259,7 @@ fn main() {
         Some(("test", m)) => TestStep::new(m).run(),
         Some(("clippy", m)) => ClippyStep::new(m).run(),
         Some(("check", m)) => CheckStep::new(m).run(),
+        Some(("integration-test", m)) => IntegrationTestStep::new(m).run(),
         Some(("fmt", m)) => FmtStep::new(m).run(),
         Some(("ci", m)) => CiStep::new(m).run(),
         Some(("qemu", m)) => {
@@ -786,6 +806,20 @@ impl ClippyStep {
             cmd.arg("--target").arg(target.to_string());
             self.lint(cmd)?;
         }
+
+        // The QEMU integration test images are bare metal kernels behind a
+        // feature, so nothing above reaches them: cargo skips a target whose
+        // required-features are missing, and the pass just above builds for
+        // a host, where a no_std kernel image cannot compile.  They are
+        // named one at a time because --tests would also ask for the lib
+        // unit tests, which need libtest and so need a host.
+        for name in IntegrationTestStep::test_names(self.arch)? {
+            let mut cmd = self.command();
+            cmd.arg("--package").arg(&package);
+            cmd.arg("--test").arg(&name);
+            cmd.arg("--features").arg("qemu-test");
+            self.lint(cmd)?;
+        }
         Ok(())
     }
 
@@ -886,7 +920,31 @@ impl CheckStep {
             ]);
         }
 
-        for cmd_args in [bins_lib_package_cmd_args, benches_tests_package_cmd_args].concat() {
+        // The QEMU integration test images are bare metal kernels behind a
+        // feature, so neither list above reaches them: cargo skips a target
+        // whose required-features are missing, and the std toolchain the
+        // tests and benches use cannot build a no_std image.  They are named
+        // one at a time because --tests would also ask for the lib unit
+        // tests, which need libtest and so need that host toolchain.
+        let mut qemu_test_cmd_args = Vec::new();
+
+        for arch in Arch::ALL {
+            for name in IntegrationTestStep::test_names(arch)? {
+                qemu_test_cmd_args.push(vec![
+                    "check".to_string(),
+                    "--package".to_string(),
+                    arch.to_string().to_lowercase(),
+                    "--test".to_string(),
+                    name,
+                    "--features".to_string(),
+                    "qemu-test".to_string(),
+                ]);
+            }
+        }
+
+        for cmd_args in
+            [bins_lib_package_cmd_args, benches_tests_package_cmd_args, qemu_test_cmd_args].concat()
+        {
             let mut cmd = Command::new(cargo());
             cmd.args(cmd_args);
             if self.json_output {
@@ -938,8 +996,297 @@ impl FmtStep {
     }
 }
 
+/// Seconds an integration test image may run before it is taken as hung.
+/// Shared between the command line default and the ci step so the two
+/// cannot drift.
+const DEFAULT_TIMEOUT_SECS: &str = "60";
+
+/// Build each integration test as a kernel image and run it under QEMU.
+///
+/// Every test in `<arch>/tests` is a whole kernel: it links the arch
+/// library, supplies its own `main9`, runs the initialisation it needs and
+/// leaves QEMU with an exit status.  Zero is a pass.
+struct IntegrationTestStep {
+    arches: Vec<Arch>,
+    config_name: String,
+    profile: Profile,
+    timeout: Duration,
+    verbose: bool,
+}
+
+impl IntegrationTestStep {
+    fn new(matches: &clap::ArgMatches) -> Self {
+        // No --arch means every architecture, so that the bare command
+        // runs everything there is to run.
+        let arches =
+            matches.get_one::<Arch>("arch").map_or_else(|| Arch::ALL.to_vec(), |&arch| vec![arch]);
+        let config_name =
+            matches.get_one::<String>("config").expect("config has a default").clone();
+        let profile = Profile::from(matches);
+        let timeout =
+            Duration::from_secs(*matches.get_one::<u64>("timeout").expect("timeout has a default"));
+        let verbose = verbose(matches);
+
+        Self { arches, config_name, profile, timeout, verbose }
+    }
+
+    fn for_ci(config_name: &str, profile: Profile, verbose: bool) -> Self {
+        Self {
+            arches: Arch::ALL.to_vec(),
+            config_name: config_name.to_string(),
+            profile,
+            timeout: Duration::from_secs(
+                DEFAULT_TIMEOUT_SECS.parse().expect("default timeout is a number"),
+            ),
+            verbose,
+        }
+    }
+
+    fn run(self) -> Result<()> {
+        let mut ran = 0;
+        let mut failed = Vec::new();
+        for &arch in &self.arches {
+            let tests = Self::test_names(arch)?;
+            if tests.is_empty() {
+                // An architecture with no tests is a fact to report, not a
+                // failure -- but never call it a pass.
+                println!("{arch}: no integration tests");
+                continue;
+            }
+            if arch != Arch::Aarch64 {
+                // The image is prepared and left the way aarch64 does it;
+                // another architecture needs its own of both.
+                return Err(format!(
+                    "{arch} has integration tests but no way to build or exit them"
+                )
+                .into());
+            }
+
+            let runner = ArchIntegrationTests {
+                arch,
+                config: load_named_config(arch, &self.config_name),
+                profile: self.profile,
+                timeout: self.timeout,
+                verbose: self.verbose,
+            };
+            for name in &tests {
+                println!("\n--- {arch} {name} ---");
+                ran += 1;
+                // An image that will not build is that image failing, the
+                // same as a non-zero exit or a timeout.  Aborting here would
+                // hide every later image.
+                let image = match runner.build(name) {
+                    Ok(image) => image,
+                    Err(err) => {
+                        println!("{arch} {name}: FAILED ({err})");
+                        failed.push(format!("{arch} {name}"));
+                        continue;
+                    }
+                };
+                // A qemu that will not start, by contrast, says nothing
+                // about the image and will say the same for all of them.
+                match runner.qemu(&image)? {
+                    Some(0) => println!("{arch} {name}: ok"),
+                    Some(code) => {
+                        println!("{arch} {name}: FAILED (exit {code})");
+                        failed.push(format!("{arch} {name}"));
+                    }
+                    None => {
+                        println!("{arch} {name}: TIMED OUT after {}s", self.timeout.as_secs());
+                        failed.push(format!("{arch} {name}"));
+                    }
+                }
+            }
+        }
+
+        if ran == 0 {
+            return Err("no integration tests found".into());
+        }
+        println!("\n{} of {ran} passed", ran - failed.len());
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("failed: {}", failed.join(", ")).into())
+        }
+    }
+
+    /// Every `<arch>/tests/*.rs` is one test image.
+    fn test_names(arch: Arch) -> Result<Vec<String>> {
+        let dir = workspace().join(arch.to_string().to_lowercase()).join("tests");
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut names: Vec<String> = std::fs::read_dir(dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+            .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+}
+
+/// Building and running one architecture's test images.
+struct ArchIntegrationTests {
+    arch: Arch,
+    config: Configuration,
+    profile: Profile,
+    timeout: Duration,
+    verbose: bool,
+}
+
+impl ArchIntegrationTests {
+    fn package(&self) -> String {
+        self.arch.to_string().to_lowercase()
+    }
+
+    /// Build one test and turn it into an image QEMU will boot, the same
+    /// way DistStep does for the kernel.
+    fn build(&self, name: &str) -> Result<PathBuf> {
+        let mut cmd = Command::new(cargo());
+        cmd.arg("build");
+        apply_to_build_step(
+            &mut cmd,
+            &self.config,
+            &self.arch.target(),
+            &self.profile,
+            workspace().to_str().unwrap(),
+        );
+        cmd.current_dir(workspace());
+        cmd.arg("--package").arg(self.package());
+        cmd.arg("--test").arg(name);
+        cmd.arg("--features").arg("qemu-test");
+        if self.profile == Profile::Release {
+            cmd.arg("--release");
+        }
+        cmd.arg("-Z").arg("build-std=core,alloc");
+        cmd.arg("-Z").arg("json-target-spec");
+        // Ask cargo which file it built.  Diagnostics still render to
+        // stderr, so only the machine readable part is captured.
+        cmd.arg("--message-format=json-render-diagnostics");
+        if self.verbose {
+            println!("Executing {cmd:?}");
+        }
+        let elf = built_test_binary(&mut cmd, name)?;
+
+        let out = workspace().join("target").join(self.arch.target()).join(self.profile.dir());
+
+        // QEMU needs a flat binary to handle the device tree correctly,
+        // and takes it gzipped, exactly as for the kernel.
+        let flat = out.join(format!("{name}-qemu"));
+        let mut cmd = Command::new(objcopy());
+        cmd.arg("-O").arg("binary").arg(&elf).arg(&flat);
+        if !annotated_status(&mut cmd)?.success() {
+            return Err("objcopy failed".into());
+        }
+        let mut cmd = Command::new("gzip");
+        cmd.arg("-k").arg("-f").arg(&flat);
+        if !annotated_status(&mut cmd)?.success() {
+            return Err("gzip failed".into());
+        }
+        Ok(out.join(format!("{name}-qemu.gz")))
+    }
+
+    /// Run an image, returning its exit code, or None if it outstayed the
+    /// timeout.  A kernel that hangs before reaching a test has to fail the
+    /// run rather than block it.
+    fn qemu(&self, image: &Path) -> Result<Option<i32>> {
+        let mut cmd = Command::new(self.arch.qemu_system());
+        apply_to_qemu_step(&mut cmd, &self.config);
+        cmd.arg("-nographic");
+        cmd.arg("-serial").arg("null");
+        cmd.arg("-serial").arg("mon:stdio");
+        // Semihosting is how the test leaves QEMU with a status at all.
+        cmd.arg("-semihosting");
+        cmd.arg("-no-reboot");
+        cmd.arg("-kernel").arg(image);
+        cmd.stdin(process::Stdio::null());
+        cmd.current_dir(workspace());
+        if self.verbose {
+            println!("Executing {cmd:?}");
+        }
+
+        let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", self.arch.qemu_system()))?;
+        let deadline = std::time::Instant::now() + self.timeout;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(Some(status.code().unwrap_or(-1)));
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill()?;
+                child.wait()?;
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Run `cmd`, a cargo build emitting JSON messages, and return the path it
+/// reports for the `name` test binary.
+///
+/// Only cargo knows which `<name>-<hash>` in deps/ belongs to this build.
+/// A different config, profile or feature set leaves another hash beside
+/// it, and a build cargo finds fresh does not touch the file, so neither
+/// the name nor the timestamp picks the image that was asked for.
+///
+/// The messages are matched as text rather than parsed, to keep a JSON
+/// library out of the build tool for three fields.  Cargo writes them
+/// compactly and their names are documented; if that ever stops holding
+/// this finds no executable and the build fails saying so, which is the
+/// one behaviour worth protecting -- it cannot quietly pick a different
+/// image, which is the reason for asking cargo at all.
+fn built_test_binary(cmd: &mut Command, name: &str) -> Result<PathBuf> {
+    cmd.stdout(process::Stdio::piped());
+    let mut child =
+        cmd.spawn().map_err(|e| format!("{}: {e}", cmd.get_program().to_string_lossy()))?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+
+    let mut executable = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = line?;
+        // Everything build-std compiles reports itself here too, and so do
+        // build scripts, which have an executable of their own.  Only the
+        // test target answers to all three.
+        if line.contains(r#""reason":"compiler-artifact""#)
+            && line.contains(&format!(r#""name":"{name}""#))
+            && line.contains(r#""kind":["test"]"#)
+            && let Some(path) = json_string_field(&line, "executable")
+        {
+            executable = Some(PathBuf::from(path));
+        }
+    }
+
+    if !child.wait()?.success() {
+        return Err(format!("building test {name} failed").into());
+    }
+    executable.ok_or_else(|| format!("cargo built no test binary for {name}").into())
+}
+
+/// The value of a `"key":"value"` string field in one of cargo's JSON
+/// messages, or None if the key is absent or does not hold a string.
+///
+/// Understands the escapes a path can arrive with.  A path holding a
+/// character JSON writes as `\n` or `\uXXXX` would come back wrong, and
+/// then fail at objcopy rather than boot anything.
+fn json_string_field(line: &str, key: &str) -> Option<String> {
+    let opening = format!("\"{key}\":\"");
+    let mut chars = line[line.find(&opening)? + opening.len()..].chars();
+    let mut value = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(value),
+            '\\' => value.push(chars.next()?),
+            _ => value.push(c),
+        }
+    }
+    None
+}
+
 /// Run every gate the tree is expected to pass: formatting, check across all
-/// arches, clippy for each arch in turn, and the unit tests.
+/// arches, clippy for each arch in turn, the unit tests, and the QEMU
+/// integration tests.  The last of these needs qemu on the path.
 struct CiStep {
     config_name: String,
     profile: Profile,
@@ -972,6 +1319,9 @@ impl CiStep {
 
         heading("test");
         TestStep { json_output: false, verbose: self.verbose }.run()?;
+
+        heading("integration-test");
+        IntegrationTestStep::for_ci(&self.config_name, self.profile, self.verbose).run()?;
 
         heading("ok");
         Ok(())
