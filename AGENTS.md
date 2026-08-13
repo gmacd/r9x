@@ -7,7 +7,8 @@ The project is designed for multi-core SMP. All concurrency primitives, initiali
 The project must be free of errors and warnings at all times, including those from check and clippy, and for all supported architectures.  All tests must pass.
 
 ## Commands
-- All gates at once (fmt, check, clippy for every arch, test, integration test):
+- All gates at once (fmt, check, clippy for every arch, test, dist for every
+  arch, integration test):
   - `cargo xtask ci` (add `--fix` to reformat in place instead of failing on formatting)
   - needs `qemu-system-<arch>` on the path for the integration tests
 - Build:

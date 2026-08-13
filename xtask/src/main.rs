@@ -348,6 +348,10 @@ impl BuildStep {
         Self { arch, config, profile, verbose }
     }
 
+    fn for_arch(arch: Arch, config_name: &str, profile: Profile, verbose: bool) -> Self {
+        Self { arch, config: load_named_config(arch, config_name), profile, verbose }
+    }
+
     fn run(self) -> Result<()> {
         let mut cmd = Command::new(cargo());
         cmd.arg("build");
@@ -391,6 +395,10 @@ impl DistStep {
         let arch = Arch::from(matches);
         let profile = Profile::from(matches);
         let verbose = verbose(matches);
+        Self { arch, profile, verbose }
+    }
+
+    fn for_arch(arch: Arch, profile: Profile, verbose: bool) -> Self {
         Self { arch, profile, verbose }
     }
 
@@ -1319,6 +1327,16 @@ impl CiStep {
 
         heading("test");
         TestStep { json_output: false, verbose: self.verbose }.run()?;
+
+        // Everything above stops at metadata or at a test binary, so none
+        // of it links a kernel.  Building the image is the only thing that
+        // says the linker script still resolves and the entry point is
+        // still reachable.
+        for arch in Arch::ALL {
+            heading(&format!("dist {arch}"));
+            BuildStep::for_arch(arch, &self.config_name, self.profile, self.verbose).run()?;
+            DistStep::for_arch(arch, self.profile, self.verbose).run()?;
+        }
 
         heading("integration-test");
         IntegrationTestStep::for_ci(&self.config_name, self.profile, self.verbose).run()?;
