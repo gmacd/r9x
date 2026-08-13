@@ -402,6 +402,12 @@ impl DistStep {
         Self { arch, profile, verbose }
     }
 
+    /// One of this arch's build artefacts, wherever cargo was told to put
+    /// them.
+    fn artifact(&self, name: &str) -> PathBuf {
+        target_dir().join(self.arch.target()).join(self.profile.dir()).join(name)
+    }
+
     fn run(self) -> Result<()> {
         match self.arch {
             Arch::Aarch64 => {
@@ -409,12 +415,8 @@ impl DistStep {
                 let mut cmd = Command::new(objcopy());
                 cmd.arg("-O");
                 cmd.arg("binary");
-                cmd.arg(format!("target/{}/{}/aarch64", self.arch.target(), self.profile.dir()));
-                cmd.arg(format!(
-                    "target/{}/{}/aarch64-qemu",
-                    self.arch.target(),
-                    self.profile.dir()
-                ));
+                cmd.arg(self.artifact("aarch64"));
+                cmd.arg(self.artifact("aarch64-qemu"));
                 cmd.current_dir(workspace());
                 if self.verbose {
                     println!("Executing {cmd:?}");
@@ -429,11 +431,7 @@ impl DistStep {
                 let mut cmd = Command::new("gzip");
                 cmd.arg("-k");
                 cmd.arg("-f");
-                cmd.arg(format!(
-                    "target/{}/{}/aarch64-qemu",
-                    self.arch.target(),
-                    self.profile.dir()
-                ));
+                cmd.arg(self.artifact("aarch64-qemu"));
                 cmd.current_dir(workspace());
                 if self.verbose {
                     println!("Executing {cmd:?}");
@@ -447,8 +445,8 @@ impl DistStep {
                 let mut cmd = Command::new(objcopy());
                 cmd.arg("--input-target=elf64-x86-64");
                 cmd.arg("--output-target=elf32-i386");
-                cmd.arg(format!("target/{}/{}/x86_64", self.arch.target(), self.profile.dir()));
-                cmd.arg(format!("target/{}/{}/r9.elf32", self.arch.target(), self.profile.dir()));
+                cmd.arg(self.artifact("x86_64"));
+                cmd.arg(self.artifact("r9.elf32"));
                 cmd.current_dir(workspace());
                 if self.verbose {
                     println!("Executing {cmd:?}");
@@ -463,12 +461,8 @@ impl DistStep {
                 let mut cmd = Command::new(objcopy());
                 cmd.arg("-O");
                 cmd.arg("binary");
-                cmd.arg(format!("target/{}/{}/riscv64", self.arch.target(), self.profile.dir()));
-                cmd.arg(format!(
-                    "target/{}/{}/riscv64-qemu",
-                    self.arch.target(),
-                    self.profile.dir()
-                ));
+                cmd.arg(self.artifact("riscv64"));
+                cmd.arg(self.artifact("riscv64-qemu"));
                 cmd.current_dir(workspace());
                 if self.verbose {
                     println!("Executing {cmd:?}");
@@ -513,8 +507,7 @@ impl QemuStep {
     }
 
     fn run(self) -> Result<()> {
-        let target = self.arch.target();
-        let dir = self.profile.dir();
+        let out = target_dir().join(self.arch.target()).join(self.profile.dir());
         let qemu_system = self.arch.qemu_system();
 
         if self.kvm && self.arch != Arch::X86_64 {
@@ -541,7 +534,7 @@ impl QemuStep {
                     cmd.arg("-s").arg("-S");
                 }
                 cmd.arg("-kernel");
-                cmd.arg(format!("target/{target}/{dir}/aarch64-qemu.gz"));
+                cmd.arg(out.join("aarch64-qemu.gz"));
                 cmd.current_dir(workspace());
                 if self.verbose {
                     // Show exception level change events in stdout
@@ -583,7 +576,7 @@ impl QemuStep {
                 }
                 cmd.arg("-d").arg("guest_errors,unimp");
                 cmd.arg("-kernel");
-                cmd.arg(format!("target/{target}/{dir}/riscv64"));
+                cmd.arg(out.join("riscv64"));
                 cmd.current_dir(workspace());
                 if self.verbose {
                     println!("Executing {cmd:?}");
@@ -620,7 +613,7 @@ impl QemuStep {
                 //cmd.arg("-device");
                 //cmd.arg("ide-hd,drive=sdahci0,bus=ahci0.0");
                 cmd.arg("-kernel");
-                cmd.arg(format!("target/{target}/{dir}/r9.elf32"));
+                cmd.arg(out.join("r9.elf32"));
                 cmd.current_dir(workspace());
                 if self.verbose {
                     println!("Executing {cmd:?}");
@@ -1266,7 +1259,7 @@ impl ArchIntegrationTests {
     /// Everything here is a host tool.  If one is missing or broken it is
     /// missing for every image, so a failure says nothing about the test.
     fn image(&self, name: &str, elf: &Path) -> Result<PathBuf> {
-        let out = workspace().join("target").join(self.arch.target()).join(self.profile.dir());
+        let out = target_dir().join(self.arch.target()).join(self.profile.dir());
 
         // QEMU needs a flat binary to handle the device tree correctly,
         // and takes it gzipped, exactly as for the kernel.
@@ -1478,6 +1471,23 @@ impl CleanStep {
 
 fn workspace() -> PathBuf {
     Path::new(&env!("CARGO_MANIFEST_DIR")).ancestors().nth(1).unwrap().to_path_buf()
+}
+
+/// Where cargo writes build artefacts.
+///
+/// Composing `target/...` by hand instead looks in the wrong place the
+/// moment CARGO_TARGET_DIR is set, and the failure is an objcopy that
+/// cannot find a file cargo says it just built.  A relative value is
+/// relative to the directory cargo runs in, which for every command here
+/// is the workspace.
+///
+/// Only the environment variable is honoured; `build.target-dir` in a
+/// cargo config file is not read.
+fn target_dir() -> PathBuf {
+    match env::var("CARGO_TARGET_DIR") {
+        Ok(dir) if !dir.is_empty() => workspace().join(dir),
+        _ => workspace().join("target"),
+    }
 }
 
 /// Exclude architectures other than the one being built

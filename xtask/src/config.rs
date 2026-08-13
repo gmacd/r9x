@@ -214,12 +214,11 @@ fn apply_link(
             }
 
             // construct the path to the target directory
-            let path = format!(
-                "{}/target/{}/{}",
-                workspace_path,
-                target,
-                profile.to_string().to_lowercase()
-            );
+            let path = crate::target_dir()
+                .join(target)
+                .join(profile.to_string().to_lowercase())
+                .display()
+                .to_string();
 
             // make sure the target directory exists
             if !std::path::Path::new(&path).exists() {
