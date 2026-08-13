@@ -1,4 +1,4 @@
-#![cfg(not(test))]
+#![cfg(target_os = "none")]
 
 extern crate alloc;
 
@@ -19,6 +19,13 @@ fn panic(info: &PanicInfo) -> ! {
     } else {
         println!("no information available.");
     }
+
+    // Under test a panic is a failed run, and spinning here would leave the
+    // harness waiting for its timeout rather than reporting the failure.
+    #[cfg(feature = "qemu-test")]
+    crate::qemu::exit(crate::qemu::FAIL);
+
+    #[cfg(not(feature = "qemu-test"))]
     abort();
 }
 

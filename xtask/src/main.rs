@@ -1066,12 +1066,13 @@ impl IntegrationTestStep {
                 println!("{arch}: no integration tests");
                 continue;
             }
-            if arch != Arch::Aarch64 {
-                // The image is prepared and left the way aarch64 does it;
-                // another architecture needs its own of both.  Record it
-                // and carry on: returning here would throw away every
-                // result already collected, which is the diagnosis the run
-                // was for.
+            if arch == Arch::X86_64 {
+                // Its image is a multiboot elf32 rather than something
+                // -kernel takes as it stands, and isa-debug-exit cannot
+                // produce a zero status, so "zero is a pass" would have to
+                // become per-arch first.  Record it and carry on: returning
+                // here would throw away every result already collected,
+                // which is the diagnosis the run was for.
                 println!("{arch}: has test images but no way to build or exit them");
                 unsupported.push(arch.to_string());
                 continue;
@@ -1259,6 +1260,13 @@ impl ArchIntegrationTests {
     /// Everything here is a host tool.  If one is missing or broken it is
     /// missing for every image, so a failure says nothing about the test.
     fn image(&self, name: &str, elf: &Path) -> Result<PathBuf> {
+        // Each arch is booted the way its own qemu step boots the kernel.
+        if self.arch != Arch::Aarch64 {
+            // riscv64's qemu loads the ELF directly, so there is nothing to
+            // prepare.
+            return Ok(elf.to_path_buf());
+        }
+
         let out = target_dir().join(self.arch.target()).join(self.profile.dir());
 
         // QEMU needs a flat binary to handle the device tree correctly,
@@ -1282,12 +1290,30 @@ impl ArchIntegrationTests {
     /// run rather than block it.
     fn qemu(&self, image: &Path) -> Result<Option<i32>> {
         let mut cmd = Command::new(self.arch.qemu_system());
-        apply_to_qemu_step(&mut cmd, &self.config);
         cmd.arg("-nographic");
-        cmd.arg("-serial").arg("null");
-        cmd.arg("-serial").arg("mon:stdio");
-        // Semihosting is how the test leaves QEMU with a status at all.
-        cmd.arg("-semihosting");
+        match self.arch {
+            Arch::Aarch64 => {
+                apply_to_qemu_step(&mut cmd, &self.config);
+                cmd.arg("-serial").arg("null");
+                cmd.arg("-serial").arg("mon:stdio");
+                // Semihosting is how the test leaves QEMU with a status.
+                cmd.arg("-semihosting");
+            }
+            // The finisher the test writes to is part of the virt machine,
+            // so nothing has to be added for it.
+            Arch::Riscv64 => {
+                cmd.arg("-machine").arg("virt");
+                cmd.arg("-cpu").arg("rv64");
+                // One hart, unlike the qemu step's four: l.S sends every
+                // hart but hart 0 to a wfi loop, and SBI does not promise
+                // to start on hart 0, so more than one makes whether the
+                // image runs at all a matter of luck.
+                cmd.arg("-smp").arg("1");
+                cmd.arg("-m").arg("1024M");
+                cmd.arg("-serial").arg("mon:stdio");
+            }
+            Arch::X86_64 => return Err("x86_64 test images are not run yet".into()),
+        }
         cmd.arg("-no-reboot");
         cmd.arg("-kernel").arg(image);
         cmd.stdin(process::Stdio::null());

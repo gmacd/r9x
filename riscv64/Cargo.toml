@@ -15,6 +15,16 @@ port = { path = "../port" }
 sbi-rt = "0.0.3"
 
 [features]
+# Builds the kernel to leave QEMU with an exit status rather than spinning,
+# so that an integration test image can report pass or fail.
+qemu-test = []
 
 [lints]
 workspace = true
+
+# Integration tests are whole kernel images: no libtest, and only built
+# when asked for, so that a host `cargo test` does not try to link them.
+[[test]]
+name = "boot"
+harness = false
+required-features = ["qemu-test"]
