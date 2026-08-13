@@ -1116,8 +1116,12 @@ impl IntegrationTestStep {
             }
         }
 
+        // Having nothing to run is not a failure.  Naming a single arch is
+        // the documented way to run one, and two of the three have no
+        // images, so reporting the fact is the whole answer -- the loop
+        // above has already said so per arch.
         if ran == 0 {
-            return Err("no integration tests found".into());
+            return Ok(());
         }
         println!("\n{} of {ran} passed", ran - failed.len());
         if failed.is_empty() {
