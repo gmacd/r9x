@@ -5,6 +5,10 @@ name = "riscv64"
 version = "0.1.0"
 edition = "2024"
 default-target = "riscv64gc-unknown-none-elf"
+# Test targets are declared in the manifest and nowhere else, so that a file
+# in tests/ with no entry is not quietly taken for an ordinary libtest
+# binary.  The same holds for every arch.
+autotests = false
 
 [dependencies]
 port = { path = "../port" }
