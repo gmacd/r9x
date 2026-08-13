@@ -6,11 +6,28 @@ version = "0.1.0"
 edition = "2024"
 default-target = "aarch64-unknown-none"
 
+[features]
+# Builds the kernel to leave QEMU with an exit status rather than looping,
+# so that an integration test image can report pass or fail.
+qemu-test = []
+
 [dependencies]
 aarch64-cpu = "11.2"
 bitstruct = "0.1"
 port = { path = "../port" }
 num_enum = { version = "0.7", default-features = false }
+
+# Integration tests are whole kernel images: no libtest, and only built
+# when asked for, so that a host `cargo test` does not try to link them.
+[[test]]
+name = "pagetables"
+harness = false
+required-features = ["qemu-test"]
+
+[[test]]
+name = "user_process"
+harness = false
+required-features = ["qemu-test"]
 
 [lints]
 workspace = true
