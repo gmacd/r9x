@@ -1059,10 +1059,12 @@ impl IntegrationTestStep {
     fn run(self) -> Result<()> {
         let mut ran = 0;
         let mut failed = Vec::new();
+        let mut undeclared = Vec::new();
         for &arch in &self.arches {
             let tests = Self::test_names(arch)?;
             for name in Self::undeclared_images(arch, &tests)? {
                 println!("{arch}: tests/{name}.rs has no [[test]] entry, so nothing builds it");
+                undeclared.push(format!("{arch} {name}"));
             }
             if tests.is_empty() {
                 // An architecture with no tests is a fact to report, not a
@@ -1120,15 +1122,21 @@ impl IntegrationTestStep {
         // the documented way to run one, and two of the three have no
         // images, so reporting the fact is the whole answer -- the loop
         // above has already said so per arch.
-        if ran == 0 {
-            return Ok(());
+        if ran > 0 {
+            println!("\n{} of {ran} passed", ran - failed.len());
         }
-        println!("\n{} of {ran} passed", ran - failed.len());
-        if failed.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("failed: {}", failed.join(", ")).into())
+
+        // An undeclared image is a test that nothing compiles and nothing
+        // runs, which is worse than one that fails: it looks like it
+        // passed.  Say so in the exit status, not only in the log.
+        let mut problems = Vec::new();
+        if !failed.is_empty() {
+            problems.push(format!("failed: {}", failed.join(", ")));
         }
+        if !undeclared.is_empty() {
+            problems.push(format!("no [[test]] entry: {}", undeclared.join(", ")));
+        }
+        if problems.is_empty() { Ok(()) } else { Err(problems.join("; ").into()) }
     }
 
     /// Every test target in the arch's manifest that asks for the
