@@ -1060,6 +1060,7 @@ impl IntegrationTestStep {
         let mut ran = 0;
         let mut failed = Vec::new();
         let mut undeclared = Vec::new();
+        let mut unsupported = Vec::new();
         for &arch in &self.arches {
             let tests = Self::test_names(arch)?;
             for name in Self::undeclared_images(arch, &tests)? {
@@ -1074,11 +1075,13 @@ impl IntegrationTestStep {
             }
             if arch != Arch::Aarch64 {
                 // The image is prepared and left the way aarch64 does it;
-                // another architecture needs its own of both.
-                return Err(format!(
-                    "{arch} has integration tests but no way to build or exit them"
-                )
-                .into());
+                // another architecture needs its own of both.  Record it
+                // and carry on: returning here would throw away every
+                // result already collected, which is the diagnosis the run
+                // was for.
+                println!("{arch}: has test images but no way to build or exit them");
+                unsupported.push(arch.to_string());
+                continue;
             }
 
             let runner = ArchIntegrationTests {
@@ -1135,6 +1138,9 @@ impl IntegrationTestStep {
         }
         if !undeclared.is_empty() {
             problems.push(format!("no [[test]] entry: {}", undeclared.join(", ")));
+        }
+        if !unsupported.is_empty() {
+            problems.push(format!("no way to build or exit: {}", unsupported.join(", ")));
         }
         if problems.is_empty() { Ok(()) } else { Err(problems.join("; ").into()) }
     }
