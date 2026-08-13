@@ -1340,8 +1340,19 @@ fn built_test_binary(cmd: &mut Command, name: &str) -> Result<PathBuf> {
     let stdout = child.stdout.take().expect("stdout is piped");
 
     let mut executable = None;
+    let mut read_error = None;
     for line in BufReader::new(stdout).lines() {
-        let line = line?;
+        // Returning from here would leave cargo running with nobody to
+        // wait for it, and stopping the read without stopping cargo would
+        // block it on a pipe nobody is draining.  Take the error out to
+        // where the child can be dealt with.
+        let line = match line {
+            Ok(line) => line,
+            Err(err) => {
+                read_error = Some(err);
+                break;
+            }
+        };
         // Everything build-std compiles reports itself here too, and so do
         // build scripts, which have an executable of their own.  Only the
         // test target answers to all three.
@@ -1352,6 +1363,14 @@ fn built_test_binary(cmd: &mut Command, name: &str) -> Result<PathBuf> {
         {
             executable = Some(PathBuf::from(path));
         }
+    }
+
+    if let Some(err) = read_error {
+        // Stop cargo rather than wait on a build whose output is no longer
+        // being read.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("reading cargo's output for {name}: {err}").into());
     }
 
     if !child.wait()?.success() {
