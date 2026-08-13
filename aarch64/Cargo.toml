@@ -5,6 +5,9 @@ name = "aarch64"
 version = "0.1.0"
 edition = "2024"
 default-target = "aarch64-unknown-none"
+# Test targets are declared below and nowhere else, so that a file in tests/
+# with no entry is not quietly taken for an ordinary libtest binary.
+autotests = false
 
 [features]
 # Builds the kernel to leave QEMU with an exit status rather than looping,

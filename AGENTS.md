@@ -29,11 +29,10 @@ The project must be free of errors and warnings at all times, including those fr
   - each `<arch>/tests/*.rs` is a kernel image with its own `main9`, running
     only the initialisation it needs
   - a new image also needs a `[[test]]` entry in the arch's `Cargo.toml`,
-    with `harness = false` and `required-features = ["qemu-test"]`: xtask
-    finds images by listing `tests/`, but cargo builds only what the
-    manifest declares, and a file with no entry is taken by cargo's
-    autotests for an ordinary libtest binary that cannot build
-  - so `tests/` holds images and nothing else: a shared helper module put
-    there would be booted as an image of its own
+    with `harness = false` and `required-features = ["qemu-test"]`: that
+    entry is what both cargo and xtask work from, and a file in `tests/`
+    without one is reported rather than run
+  - shared helpers go in a subdirectory, `tests/common/mod.rs`, which is
+    not a target for either
 - Format:
   - `cargo xtask fmt` (`--check` to verify without rewriting)

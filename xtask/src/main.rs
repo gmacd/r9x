@@ -825,7 +825,7 @@ impl ClippyStep {
             let mut cmd = self.command();
             cmd.arg("--package").arg(&package);
             cmd.arg("--test").arg(&name);
-            cmd.arg("--features").arg("qemu-test");
+            cmd.arg("--features").arg(QEMU_TEST_FEATURE);
             self.lint(cmd)?;
         }
         Ok(())
@@ -945,7 +945,7 @@ impl CheckStep {
                     "--test".to_string(),
                     name,
                     "--features".to_string(),
-                    "qemu-test".to_string(),
+                    QEMU_TEST_FEATURE.to_string(),
                 ]);
             }
         }
@@ -1055,6 +1055,9 @@ impl IntegrationTestStep {
         let mut failed = Vec::new();
         for &arch in &self.arches {
             let tests = Self::test_names(arch)?;
+            for name in Self::undeclared_images(arch, &tests)? {
+                println!("{arch}: tests/{name}.rs has no [[test]] entry, so nothing builds it");
+            }
             if tests.is_empty() {
                 // An architecture with no tests is a fact to report, not a
                 // failure -- but never call it a pass.
@@ -1118,21 +1121,71 @@ impl IntegrationTestStep {
         }
     }
 
-    /// Every `<arch>/tests/*.rs` is one test image.
+    /// Every test target in the arch's manifest that asks for the
+    /// [`QEMU_TEST_FEATURE`] is one test image.
+    ///
+    /// Cargo builds what the manifest declares, so reading it is the only
+    /// way to agree with cargo about what there is to run: listing tests/
+    /// instead would count a file cargo does not build, and miss the
+    /// feature that says which targets are kernels rather than ordinary
+    /// test binaries.
     fn test_names(arch: Arch) -> Result<Vec<String>> {
+        let manifest_path = workspace().join(arch.to_string().to_lowercase()).join("Cargo.toml");
+        let manifest = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let manifest: ArchManifest =
+            toml::from_str(&manifest).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+
+        let mut names: Vec<String> = manifest
+            .test
+            .into_iter()
+            .filter(|test| test.required_features.iter().any(|f| f == QEMU_TEST_FEATURE))
+            .map(|test| test.name)
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Files directly in `tests/` that no manifest entry claims.
+    ///
+    /// Reading the manifest means cargo and this agree on what to run, but
+    /// it also means a forgotten `[[test]]` stanza is a test that silently
+    /// never runs.  Report those.  Shared helpers belong in a subdirectory
+    /// of `tests/`, which cargo does not treat as a target and this does
+    /// not look into.
+    fn undeclared_images(arch: Arch, declared: &[String]) -> Result<Vec<String>> {
         let dir = workspace().join(arch.to_string().to_lowercase()).join("tests");
         if !dir.is_dir() {
             return Ok(Vec::new());
         }
         let mut names: Vec<String> = std::fs::read_dir(dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-            .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "rs"))
+            .filter_map(|path| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .filter(|stem| !declared.contains(stem))
             .collect();
         names.sort();
         Ok(names)
     }
+}
+
+/// The feature that builds an arch library so its test images can leave
+/// QEMU with a status, and that marks those targets in the manifest.
+const QEMU_TEST_FEATURE: &str = "qemu-test";
+
+/// An arch's Cargo.toml, cut down to the test targets.
+#[derive(serde::Deserialize)]
+struct ArchManifest {
+    #[serde(default)]
+    test: Vec<ManifestTest>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestTest {
+    name: String,
+    #[serde(default, rename = "required-features")]
+    required_features: Vec<String>,
 }
 
 /// Building and running one architecture's test images.
@@ -1164,7 +1217,7 @@ impl ArchIntegrationTests {
         cmd.current_dir(workspace());
         cmd.arg("--package").arg(self.package());
         cmd.arg("--test").arg(name);
-        cmd.arg("--features").arg("qemu-test");
+        cmd.arg("--features").arg(QEMU_TEST_FEATURE);
         if self.profile == Profile::Release {
             cmd.arg("--release");
         }
