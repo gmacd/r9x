@@ -20,18 +20,8 @@ use aarch64::qemu;
 use aarch64::vm;
 use port::println;
 
-/// Report and end the run on the first failure.  A test image has no
-/// unwinding and nothing to hand a failure back to but its exit status.
-macro_rules! check {
-    ($cond:expr, $($arg:tt)+) => {
-        if $cond {
-            println!("ok    {}", format_args!($($arg)+));
-        } else {
-            println!("FAIL  {}", format_args!($($arg)+));
-            qemu::exit(qemu::FAIL);
-        }
-    };
-}
+#[macro_use]
+mod common;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main9(dtb_va: usize) {

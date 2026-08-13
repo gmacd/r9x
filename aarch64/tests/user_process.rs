@@ -17,18 +17,8 @@ use aarch64::vm::{Entry, RootPageTableType, VaMapping};
 use aarch64::{boot, pagealloc, qemu, vm};
 use port::println;
 
-/// Report and end the run on the first failure.  A test image has no
-/// unwinding and nothing to hand a failure back to but its exit status.
-macro_rules! check {
-    ($cond:expr, $($arg:tt)+) => {
-        if $cond {
-            println!("ok    {}", format_args!($($arg)+));
-        } else {
-            println!("FAIL  {}", format_args!($($arg)+));
-            qemu::exit(qemu::FAIL);
-        }
-    };
-}
+#[macro_use]
+mod common;
 
 /// mov x0, #0; mov x1, #1; svc #3
 const SYSCALL_EXIT: [u8; 12] =
