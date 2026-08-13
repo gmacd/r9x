@@ -1,6 +1,6 @@
 //!! Debug tools for VM code
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 use port::println;
 
 use crate::vm::{Entry, Level, RootPageTable, RootPageTableType, Table};

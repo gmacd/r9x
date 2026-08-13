@@ -8,7 +8,7 @@ use port::fdt::DeviceTree;
 use port::mcslock::{Lock, LockNode};
 use port::mem::{PhysAddr, PhysRange, VirtRange};
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 use port::println;
 
 const MBOX_READ: usize = 0x00;

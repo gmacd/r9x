@@ -4,8 +4,10 @@ use crate::uartmini::MiniUart;
 use port::devcons::{Console, IprintOps, Uart};
 use port::fdt::DeviceTree;
 use port::once::Once;
-#[cfg(not(test))]
+
+#[cfg(target_os = "none")]
 use port::println;
+
 // The aarch64 devcons implementation is focussed on Raspberry Pi 4 for now.
 
 // Useful links

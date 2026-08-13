@@ -8,7 +8,7 @@ use crate::io::{delay, read_reg, write_or_reg, write_reg};
 use crate::registers::{GPFSEL1, GPPUD, GPPUDCLK0};
 use crate::vm;
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 use port::println;
 
 // AUX registers, offset from aux_reg

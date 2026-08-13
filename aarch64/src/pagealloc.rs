@@ -24,7 +24,7 @@ use port::{
     mem::PAGE_SIZE_4K,
 };
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 use port::println;
 
 /// Set up bitmap page allocator assuming everything is allocated.

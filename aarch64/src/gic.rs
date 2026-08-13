@@ -17,7 +17,7 @@ use port::once::Once;
 
 use bitstruct::bitstruct;
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 use port::println;
 
 const GICC_CTLR: usize = 0x0000;

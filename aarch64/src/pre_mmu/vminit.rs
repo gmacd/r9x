@@ -311,7 +311,7 @@ pub extern "C" fn init_vm(dtb_pa: u64) {
     MAIR_EL1.set(0x00ff);
 
     // https://forum.osdev.org/viewtopic.php?t=36412&p=303237
-    #[cfg(not(test))]
+    #[cfg(target_os = "none")]
     unsafe {
         // invalidate all TLB entries
         core::arch::asm!("tlbi vmalle1is")

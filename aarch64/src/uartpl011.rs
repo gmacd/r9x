@@ -7,7 +7,7 @@ use port::devcons::Uart;
 use port::fdt::DeviceTree;
 use port::mem::VirtRange;
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 use port::println;
 
 // UART 0 (PL011) registers
