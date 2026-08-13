@@ -6,7 +6,7 @@ use crate::vsvm;
 
 use core::arch::naked_asm;
 
-pub(crate) fn init() {
+pub fn init() {
     const MSR_STAR: u32 = 0xc000_0081;
     const MSR_LSTAR: u32 = 0xc000_0082;
     const MSR_FMASK: u32 = 0xc000_0084;
@@ -122,6 +122,13 @@ unsafe extern "C" fn entry() {
     );
 }
 
+/// Return to user space from a system call.
+///
+/// # Safety
+/// Entered only from the syscall path, with the stack holding the frame
+/// that path pushed: it pops registers from it and executes `sysretq`.
+/// Called from anywhere else it returns to whatever the stack happens to
+/// hold, in user mode.
 #[unsafe(naked)]
 pub unsafe extern "C" fn ret() {
     naked_asm!(

@@ -380,6 +380,13 @@ impl Idt {
     }
 }
 
+/// Install `mach` as this CPU's per-CPU block and load the descriptor
+/// tables that refer to it.
+///
+/// # Safety
+/// `mach` must live for as long as the CPU runs: its address becomes the
+/// gs base, and the GDT, IDT and TSS this loads point into it.  Call once
+/// per CPU, before anything reads `%gs` or takes an interrupt.
 pub unsafe fn init(mach: &mut Mach) {
     unsafe {
         mach.init();

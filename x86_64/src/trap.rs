@@ -19,6 +19,11 @@ pub struct Stub(usize);
 
 impl Stub {
     /// Returns a function pointer that represents a stub.
+    ///
+    /// # Safety
+    /// The stub must hold the address of one of the generated trap stubs,
+    /// which is the only thing that can be entered with the calling
+    /// convention an IDT entry uses.
     pub unsafe fn as_thunk(&self) -> Thunk {
         unsafe { core::mem::transmute::<usize, Thunk>(self.0) }
     }

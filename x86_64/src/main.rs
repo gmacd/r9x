@@ -1,29 +1,13 @@
-#![cfg_attr(not(test), feature(alloc_error_handler))]
-#![feature(fn_align)]
-#![feature(sync_unsafe_cell)]
-#![cfg_attr(not(any(test)), no_std)]
+//! The kernel binary: the boot sequence, and nothing else.  Everything it
+//! calls lives in the `x86_64` library, so that integration tests can link
+//! the same code and run a shorter sequence of their own.
+#![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(not(test), no_main)]
-#![allow(clippy::upper_case_acronyms)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-mod allocator;
-mod cpu;
-mod dat;
-mod devcons;
-mod node0;
-mod pio;
-mod proc;
-mod syscall;
-mod trap;
-mod uart16550;
-mod vsvm;
-
-use proc::{Label, swtch};
-
-#[cfg(not(test))]
-core::arch::global_asm!(include_str!("l.S"), options(att_syntax));
-
 use port::println;
+use x86_64::proc::{Label, swtch};
+use x86_64::{dat, devcons, syscall, trap, vsvm};
 
 static mut THRSTACK: [u64; 1024] = [0; 1024];
 static mut CTX: u64 = 0;
@@ -65,5 +49,3 @@ pub extern "C" fn main(mach: &mut dat::Mach, _mbdata: u64) {
         trap::spllo();
     }
 }
-
-mod runtime;

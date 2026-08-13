@@ -1,4 +1,4 @@
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 mod global {
     use core::mem;
     use core::sync::atomic::AtomicPtr;

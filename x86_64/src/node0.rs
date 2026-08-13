@@ -92,6 +92,14 @@ fn ptr2hpa<T>(ptr: *const T) -> HPA {
     HPA(ptr.addr() as u64)
 }
 
+/// Build the first page tables and per-CPU block, returning the physical
+/// address of the root table.
+///
+/// # Safety
+/// Called from the boot code with `lomem` pointing at enough free, page
+/// aligned low memory for the pages carved out below, none of which is in
+/// use: everything written here is written through raw pointers derived
+/// from it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init0(lomem: *mut Page) -> HPA {
     let debug_stack = ptr2hpa(lomem.wrapping_add(0));

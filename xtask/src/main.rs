@@ -69,6 +69,18 @@ impl Arch {
     fn target(&self) -> String {
         env_or("TARGET", format!("{}-unknown-none-elf", self.to_string().to_lowercase()).as_str())
     }
+
+    /// The process exit status a passing test image leaves QEMU with.
+    ///
+    /// Zero everywhere the guest can choose its own status.  x86-64 exits
+    /// through isa-debug-exit, which returns `(value << 1) | 1` and so can
+    /// never return zero; the value is the one its `qemu::PASS` writes.
+    fn passing_status(&self) -> i32 {
+        match self {
+            Arch::Aarch64 | Arch::Riscv64 => 0,
+            Arch::X86_64 => 33,
+        }
+    }
 }
 
 impl fmt::Display for Arch {
@@ -1053,7 +1065,6 @@ impl IntegrationTestStep {
         let mut ran = 0;
         let mut failed = Vec::new();
         let mut undeclared = Vec::new();
-        let mut unsupported = Vec::new();
         for &arch in &self.arches {
             let tests = Self::test_names(arch)?;
             for name in Self::undeclared_images(arch, &tests)? {
@@ -1064,17 +1075,6 @@ impl IntegrationTestStep {
                 // An architecture with no tests is a fact to report, not a
                 // failure -- but never call it a pass.
                 println!("{arch}: no integration tests");
-                continue;
-            }
-            if arch == Arch::X86_64 {
-                // Its image is a multiboot elf32 rather than something
-                // -kernel takes as it stands, and isa-debug-exit cannot
-                // produce a zero status, so "zero is a pass" would have to
-                // become per-arch first.  Record it and carry on: returning
-                // here would throw away every result already collected,
-                // which is the diagnosis the run was for.
-                println!("{arch}: has test images but no way to build or exit them");
-                unsupported.push(arch.to_string());
                 continue;
             }
 
@@ -1104,7 +1104,9 @@ impl IntegrationTestStep {
                 // the same for every one of them.
                 let image = runner.image(name, &elf)?;
                 match runner.qemu(&image)? {
-                    Some(0) => println!("{arch} {name}: ok"),
+                    Some(code) if code == arch.passing_status() => {
+                        println!("{arch} {name}: ok")
+                    }
                     Some(code) => {
                         println!("{arch} {name}: FAILED (exit {code})");
                         failed.push(format!("{arch} {name}"));
@@ -1134,9 +1136,6 @@ impl IntegrationTestStep {
         }
         if !undeclared.is_empty() {
             problems.push(format!("no [[test]] entry: {}", undeclared.join(", ")));
-        }
-        if !unsupported.is_empty() {
-            problems.push(format!("no way to build or exit: {}", unsupported.join(", ")));
         }
         if problems.is_empty() { Ok(()) } else { Err(problems.join("; ").into()) }
     }
@@ -1261,13 +1260,26 @@ impl ArchIntegrationTests {
     /// missing for every image, so a failure says nothing about the test.
     fn image(&self, name: &str, elf: &Path) -> Result<PathBuf> {
         // Each arch is booted the way its own qemu step boots the kernel.
-        if self.arch != Arch::Aarch64 {
-            // riscv64's qemu loads the ELF directly, so there is nothing to
-            // prepare.
-            return Ok(elf.to_path_buf());
-        }
-
         let out = target_dir().join(self.arch.target()).join(self.profile.dir());
+
+        match self.arch {
+            // riscv64's qemu loads the ELF directly, so there is nothing
+            // to prepare.
+            Arch::Riscv64 => return Ok(elf.to_path_buf()),
+            // x86-64 boots a multiboot elf32, exactly as for the kernel.
+            Arch::X86_64 => {
+                let elf32 = out.join(format!("{name}.elf32"));
+                let mut cmd = Command::new(objcopy());
+                cmd.arg("--input-target=elf64-x86-64");
+                cmd.arg("--output-target=elf32-i386");
+                cmd.arg(elf).arg(&elf32);
+                if !annotated_status(&mut cmd)?.success() {
+                    return Err("objcopy failed".into());
+                }
+                return Ok(elf32);
+            }
+            Arch::Aarch64 => {}
+        }
 
         // QEMU needs a flat binary to handle the device tree correctly,
         // and takes it gzipped, exactly as for the kernel.
@@ -1312,7 +1324,16 @@ impl ArchIntegrationTests {
                 cmd.arg("-m").arg("1024M");
                 cmd.arg("-serial").arg("mon:stdio");
             }
-            Arch::X86_64 => return Err("x86_64 test images are not run yet".into()),
+            Arch::X86_64 => {
+                cmd.arg("-M").arg("q35");
+                cmd.arg("-cpu").arg("qemu64,pdpe1gb,xsaveopt,fsgsbase,apic,msr");
+                cmd.arg("-smp").arg("8");
+                cmd.arg("-m").arg("8192");
+                cmd.arg("-serial").arg("mon:stdio");
+                // How the test leaves QEMU with a status at all.  The
+                // guest writes to iobase; QEMU exits (value << 1) | 1.
+                cmd.arg("-device").arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
+            }
         }
         cmd.arg("-no-reboot");
         cmd.arg("-kernel").arg(image);

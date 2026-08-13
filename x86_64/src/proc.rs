@@ -1,6 +1,12 @@
 pub use crate::dat::Label;
 use core::arch::naked_asm;
 
+/// Save the callee-saved state into `save` and resume `next`.
+///
+/// # Safety
+/// `next` must hold state this function saved earlier, or a label built to
+/// look like it: a stack pointer into a stack that is still live, and a pc
+/// that can be returned to.  Anything else resumes into rubbish.
 #[unsafe(naked)]
 pub unsafe extern "C" fn swtch(save: &mut Label, next: &mut Label) {
     naked_asm!(

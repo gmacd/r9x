@@ -21,3 +21,15 @@ static_assertions = "1.1.0"
 
 [lints]
 workspace = true
+
+[features]
+# Builds the kernel to leave QEMU with an exit status rather than looping,
+# so that an integration test image can report pass or fail.
+qemu-test = []
+
+# Integration tests are whole kernel images: no libtest, and only built
+# when asked for, so that a host `cargo test` does not try to link them.
+[[test]]
+name = "boot"
+harness = false
+required-features = ["qemu-test"]

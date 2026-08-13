@@ -242,6 +242,13 @@ static_assertions::const_assert_eq!(core::mem::offset_of!(Mach, pml4), 65536 * 2
 static_assertions::const_assert_eq!(core::mem::offset_of!(Mach, stack), 65536);
 
 impl Mach {
+    /// Point this `Mach` at itself and fill in the TSS from its stacks.
+    ///
+    /// # Safety
+    /// Must be called on a `Mach` that stays where it is for as long as the
+    /// CPU runs: it stores its own address, and the TSS entries it writes
+    /// point into its stacks.  Calling it on a temporary, or moving the
+    /// `Mach` afterwards, leaves both pointing at freed memory.
     pub unsafe fn init(&mut self) {
         use crate::trap;
         self.me = self;
@@ -361,6 +368,12 @@ impl Page {
     pub const fn len(&self) -> usize {
         self.0.len()
     }
+
+    /// Never: a page is a fixed number of bytes.  Here because a public
+    /// `len` without it reads as a collection that might be empty.
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
 }
 
 impl Default for Page {
@@ -374,6 +387,12 @@ pub trait Stack {
     fn len(&self) -> usize;
     fn top(&self) -> *const u8;
     fn top_mut(&mut self) -> *mut u8;
+
+    /// Never: a stack is a fixed number of pages.  Here because a `len`
+    /// without it reads as a collection that might be empty.
+    fn is_empty(&self) -> bool {
+        false
+    }
 }
 
 /// A small stack that we can use for exception handlers
