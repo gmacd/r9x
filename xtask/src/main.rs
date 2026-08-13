@@ -1316,11 +1316,7 @@ impl ArchIntegrationTests {
             Arch::Riscv64 => {
                 cmd.arg("-machine").arg("virt");
                 cmd.arg("-cpu").arg("rv64");
-                // One hart, unlike the qemu step's four: l.S sends every
-                // hart but hart 0 to a wfi loop, and SBI does not promise
-                // to start on hart 0, so more than one makes whether the
-                // image runs at all a matter of luck.
-                cmd.arg("-smp").arg("1");
+                cmd.arg("-smp").arg("4");
                 cmd.arg("-m").arg("1024M");
                 cmd.arg("-serial").arg("mon:stdio");
             }
