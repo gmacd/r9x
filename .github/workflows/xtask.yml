@@ -23,10 +23,10 @@ jobs:
             ~/.rustup/settings.toml
           key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # The integration tests boot kernel images; qemu-system-arm provides
-      # qemu-system-aarch64, the only architecture with tests so far.
+      # The integration tests boot kernel images; install the QEMU
+      # system emulators for all supported architectures.
       - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm qemu-system-misc qemu-system-x86
       - name: Format, check, clippy (all arches), test and integration test
         run: cargo xtask ci --verbose
 
