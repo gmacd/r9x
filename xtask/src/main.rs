@@ -1066,8 +1066,13 @@ impl IntegrationTestStep {
         let mut undeclared = Vec::new();
         for &arch in &self.arches {
             let tests = Self::test_names(arch)?;
-            for name in Self::undeclared_images(arch, &tests)? {
-                println!("{arch}: tests/{name}.rs has no [[test]] entry, so nothing builds it");
+            let all_stanzas = Self::all_test_stanzas(arch)?;
+            for (name, no_stanza) in Self::undeclared_images(arch, &all_stanzas)? {
+                if no_stanza {
+                    println!("{arch}: tests/{name}.rs has no [[test]] entry, so nothing builds it");
+                } else {
+                    println!("{arch}: tests/{name}.rs has a [[test]] entry, but is missing the {QEMU_TEST_FEATURE} feature");
+                }
                 undeclared.push(format!("{arch} {name}"));
             }
             if tests.is_empty() {
@@ -1147,15 +1152,20 @@ impl IntegrationTestStep {
     /// instead would count a file cargo does not build, and miss the
     /// feature that says which targets are kernels rather than ordinary
     /// test binaries.
-    fn test_names(arch: Arch) -> Result<Vec<String>> {
+    fn all_test_stanzas(arch: Arch) -> Result<Vec<ManifestTest>> {
         let manifest_path = workspace().join(arch.to_string().to_lowercase()).join("Cargo.toml");
         let manifest = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
         let manifest: ArchManifest =
             toml::from_str(&manifest).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
 
-        let mut names: Vec<String> = manifest
-            .test
+        Ok(manifest.test)
+    }
+
+    /// Every test target in the arch's manifest that asks for the
+    /// [`QEMU_TEST_FEATURE`] is one test image.
+    fn test_names(arch: Arch) -> Result<Vec<String>> {
+        let mut names: Vec<String> = Self::all_test_stanzas(arch)?
             .into_iter()
             .filter(|test| test.required_features.iter().any(|f| f == QEMU_TEST_FEATURE))
             .map(|test| test.name)
@@ -1171,20 +1181,31 @@ impl IntegrationTestStep {
     /// never runs.  Report those.  Shared helpers belong in a subdirectory
     /// of `tests/`, which cargo does not treat as a target and this does
     /// not look into.
-    fn undeclared_images(arch: Arch, declared: &[String]) -> Result<Vec<String>> {
+    fn undeclared_images(arch: Arch, all_stanzas: &[ManifestTest]) -> Result<Vec<(String, bool)>> {
         let dir = workspace().join(arch.to_string().to_lowercase()).join("tests");
         if !dir.is_dir() {
             return Ok(Vec::new());
         }
-        let mut names: Vec<String> = std::fs::read_dir(dir)?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|e| e == "rs"))
-            .filter_map(|path| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
-            .filter(|stem| !declared.contains(stem))
-            .collect();
-        names.sort();
-        Ok(names)
+        let mut results = Vec::new();
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.extension().is_some_and(|e| e == "rs") {
+                continue;
+            }
+            let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+            match all_stanzas.iter().find(|t| t.name == stem) {
+                None => {
+                    results.push((stem, true)); // No stanza at all
+                }
+                Some(test) if !test.required_features.iter().any(|f| f == QEMU_TEST_FEATURE) => {
+                    results.push((stem, false)); // Stanza exists but missing feature
+                }
+                _ => {}
+            }
+        }
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(results)
     }
 }
 
