@@ -78,7 +78,7 @@ impl Arch {
     fn passing_status(&self) -> i32 {
         match self {
             Arch::Aarch64 | Arch::Riscv64 => 0,
-            Arch::X86_64 => 33,
+            Arch::X86_64 => port::qemu::PASS_STATUS,
         }
     }
 }

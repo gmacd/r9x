@@ -536,6 +536,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "port",
  "serde",
  "target-lexicon",
  "toml",

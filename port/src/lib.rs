@@ -18,5 +18,6 @@ pub mod mcslock;
 pub mod mem;
 pub mod once;
 pub mod pagealloc;
+pub mod qemu;
 
 pub type Result<T> = core::result::Result<T, &'static str>;
