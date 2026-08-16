@@ -193,7 +193,11 @@ pub fn interrupt_handler() {
         } else if timer.callback.fire() {
             // Advance the deadline; if the callback cancelled its own
             // timer the cleared active flag still stops it.
-            timer.deadline_ticks.store(deadline + period, Ordering::Relaxed);
+            // If the callback ran longer than the period, advance the
+            // deadline repeatedly until it is in the future to avoid
+            // an interrupt storm.
+            let next = deadline + ((now - deadline) / period + 1) * period;
+            timer.deadline_ticks.store(next, Ordering::Relaxed);
         } else {
             timer.active.store(false, Ordering::Release);
         }
