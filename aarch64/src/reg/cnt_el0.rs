@@ -12,7 +12,15 @@ pub struct CntPctEl0(u64);
 
 impl CntPctEl0 {
     pub fn read() -> Self {
-        Self(if cfg!(test) { 0 } else { CNTPCT_EL0.extract().into() })
+        Self(if cfg!(test) {
+            0
+        } else {
+            // Reads of the physical counter can be speculatively early;
+            // a context synchronisation barrier ensures we read the
+            // value as it is after all preceding instructions.
+            barrier::isb(barrier::SY);
+            CNTPCT_EL0.extract().into()
+        })
     }
 
     pub fn value(self) -> u64 {
@@ -53,6 +61,12 @@ impl CntpCvalEl0 {
     pub fn write(value: u64) {
         if !cfg!(test) {
             CNTP_CVAL_EL0.set(value);
+            // A direct system-register write is not guaranteed to have
+            // reached the timer's interrupt output until a context
+            // synchronisation event.  Callers re-arm the timer and then
+            // immediately EOI at the GIC, so without this the EOI can
+            // race the deassert and the level-triggered PPI re-fires.
+            barrier::isb(barrier::SY);
         }
     }
 }
