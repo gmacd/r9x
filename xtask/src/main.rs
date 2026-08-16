@@ -755,14 +755,13 @@ impl TestStep {
 
             // What there is to test differs by package.  port is a host
             // library with integration tests, which --tests picks up and
-            // --lib would miss.  aarch64's tests are all in its library,
-            // and its binary cannot be built for a host: the boot assembly
-            // is only assembled for the bare metal target.  riscv64 and
-            // x86_64 have no library at all, so --lib is not a narrower
-            // selection there but an error.
+            // --lib would miss.  aarch64, riscv64, and x86_64 have their
+            // tests in their libraries, and their binaries cannot be built
+            // for a host: the boot assembly is only assembled for the bare
+            // metal target.
             let targets = match package {
                 "port" => "--tests",
-                "aarch64" => "--lib",
+                "aarch64" | "riscv64" | "x86_64" => "--lib",
                 _ => "--bins",
             };
             cmd.args(["test", "--package", package, targets, "--target", &target.to_string()]);
