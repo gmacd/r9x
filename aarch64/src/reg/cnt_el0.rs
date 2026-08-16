@@ -10,11 +10,23 @@ use bitstruct::bitstruct;
 #[derive(Copy, Clone, Default)]
 pub struct CntPctEl0(u64);
 
+#[cfg(test)]
+static MOCK_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub fn set_mock_count(count: u64) {
+    MOCK_COUNT.store(count, core::sync::atomic::Ordering::Relaxed);
+}
+
 impl CntPctEl0 {
+    #[cfg(test)]
     pub fn read() -> Self {
-        Self(if cfg!(test) {
-            0
-        } else {
+        Self(MOCK_COUNT.load(core::sync::atomic::Ordering::Relaxed))
+    }
+
+    #[cfg(not(test))]
+    pub fn read() -> Self {
+        Self({
             // Reads of the physical counter can be speculatively early;
             // a context synchronisation barrier ensures we read the
             // value as it is after all preceding instructions.
