@@ -13,7 +13,7 @@ macro_rules! check {
             ::port::println!("ok    {}", format_args!($($arg)+));
         } else {
             ::port::println!("FAIL  {}", format_args!($($arg)+));
-            ::x86_64::qemu::exit(::x86_64::qemu::FAIL);
+            ::x86_64::qemu::exit(port::qemu::FAIL);
         }
     };
 }

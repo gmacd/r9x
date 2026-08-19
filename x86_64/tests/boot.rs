@@ -60,5 +60,5 @@ pub extern "C" fn main(mach: &mut dat::Mach, _mbdata: u64) {
     trap::splx(spl);
 
     println!("boot passed");
-    qemu::exit(qemu::PASS);
+    qemu::exit(port::qemu::PASS);
 }
