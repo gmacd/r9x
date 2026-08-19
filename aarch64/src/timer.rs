@@ -228,8 +228,8 @@ mod tests {
     fn test_periodic_timer_clamping() {
         // Setup: 100Hz timer (10ms period)
         TIMER_FREQ.store(100, Ordering::Relaxed);
-        let period = Duration::from_millis(10);
-
+        let _period = Duration::from_millis(10);
+        
         static CALLBACK: MockCallback = MockCallback;
         static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
 
