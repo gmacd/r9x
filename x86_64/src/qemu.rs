@@ -7,15 +7,14 @@
 //! the way it is on the other architectures, and the harness has to know
 //! which status this arch calls success.
 
-use crate::pio::outl;
-use port::qemu::*;
-
 /// Stop the machine, handing `code` back to QEMU's own exit status.
 ///
 /// Returns only if the device is absent, in which case there is no way to
 /// stop and the caller's timeout is what ends the run.
 #[cfg(target_os = "none")]
 pub fn exit(code: u32) -> ! {
+    use crate::pio::outl;
+    use port::qemu::IOBASE;
     unsafe { outl(IOBASE, code) };
     loop {
         unsafe { core::arch::asm!("hlt", options(nomem, nostack)) }
