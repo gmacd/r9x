@@ -37,9 +37,9 @@ jobs:
 
   arch-ci:
     # The aarch64 images boot a raspi4b, and the qemu 8.2 in
-    # ubuntu-latest (24.04) does not provide that machine; 9.2 in
-    # ubuntu-25.04 does.
-    runs-on: ubuntu-25.04
+    # ubuntu-latest (24.04) does not provide that machine; the qemu 10.2
+    # in ubuntu-26.04 does.
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     strategy:
       matrix:
@@ -61,7 +61,7 @@ jobs:
         # image's own package lists if update does not finish in time.
         run: |
           sudo timeout -k 60 300 apt-get update || echo "warning: apt-get update timed out; using the image's package lists"
-          sudo DEBIAN_FRONTEND=noninteractive timeout -k 120 600 apt-get install -y qemu-system-arm qemu-system-misc qemu-system-x86
+          sudo DEBIAN_FRONTEND=noninteractive timeout -k 120 600 apt-get install -y qemu-system-arm qemu-system-riscv qemu-system-x86
       - name: Clippy
         run: cargo xtask clippy --arch ${{ matrix.arch }} --verbose
       - name: Dist
