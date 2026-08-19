@@ -1356,6 +1356,10 @@ impl ArchIntegrationTests {
         cmd.arg("-no-reboot");
         cmd.arg("-kernel").arg(image);
         cmd.stdin(process::Stdio::null());
+        if !self.verbose {
+            cmd.stdout(process::Stdio::null());
+            cmd.stderr(process::Stdio::null());
+        }
         cmd.current_dir(workspace());
         if self.verbose {
             println!("Executing {cmd:?}");
