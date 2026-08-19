@@ -1397,27 +1397,43 @@ impl ArchIntegrationTests {
         use std::io::{BufReader, Read, Write};
         let mut reader = BufReader::new(stream);
         let mut buffer = [0u8; 1024];
+        let mut carry = Vec::new();
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    let mut data = carry;
+                    data.extend_from_slice(&buffer[..n]);
+                    carry.clear();
                     let mut output = Vec::new();
                     let mut i = 0;
-                    while i < n {
-                        if buffer[i] == b'\x1b' && i + 1 < n && buffer[i + 1] == b'[' {
-                            // CSI (Control Sequence Introducer) sequences: ESC [ ...
-                            let mut j = i + 2;
-                            while j < n && (buffer[j] < 0x40) {
-                                j += 1;
+                    while i < data.len() {
+                        if data[i] == b'\x1b' {
+                            if i + 1 < data.len() && data[i+1] == b'[' {
+                                let mut j = i + 2;
+                                while j < data.len() && (data[j] < 0x40) {
+                                    j += 1;
+                                }
+                                if j < data.len() {
+                                    j += 1; // consume the final byte (0x40-0x7E)
+                                    i = j;
+                                } else {
+                                    carry.extend_from_slice(&data[i..]);
+                                    i = data.len();
+                                }
+                            } else if i + 1 < data.len() && data[i+1] == b'c' {
+                                i += 2;
+                            } else if i + 1 < data.len() {
+                                // Other escape sequence, just let it through or skip it?
+                                // Most other sequences are also \x1b + char.
+                                output.push(data[i]);
+                                i += 1;
+                            } else {
+                                carry.push(data[i]);
+                                i += 1;
                             }
-                            if j < n {
-                                j += 1; // consume the final byte (0x40-0x7E)
-                            }
-                            i = j;
-                        } else if buffer[i] == b'\x1b' && i + 1 < n && buffer[i + 1] == b'c' {
-                            i += 2; // skip RIS reset
                         } else {
-                            output.push(buffer[i]);
+                            output.push(data[i]);
                             i += 1;
                         }
                     }
