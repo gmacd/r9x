@@ -1402,9 +1402,8 @@ impl ArchIntegrationTests {
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let mut data = carry;
+                    let mut data = std::mem::take(&mut carry);
                     data.extend_from_slice(&buffer[..n]);
-                    carry.clear();
                     let mut output = Vec::new();
                     let mut i = 0;
                     while i < data.len() {
@@ -1424,8 +1423,6 @@ impl ArchIntegrationTests {
                             } else if i + 1 < data.len() && data[i+1] == b'c' {
                                 i += 2;
                             } else if i + 1 < data.len() {
-                                // Other escape sequence, just let it through or skip it?
-                                // Most other sequences are also \x1b + char.
                                 output.push(data[i]);
                                 i += 1;
                             } else {
