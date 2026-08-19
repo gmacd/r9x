@@ -1373,8 +1373,8 @@ impl ArchIntegrationTests {
             let stdout = child.stdout.take().expect("stdout was piped");
             let stderr = child.stderr.take().expect("stderr was piped");
             std::thread::spawn(move || {
-                filter_and_print(stdout);
-                filter_and_print(stderr);
+                Self::filter_and_print(stdout);
+                Self::filter_and_print(stderr);
             });
         }
         let deadline = std::time::Instant::now() + self.timeout;
@@ -1394,7 +1394,8 @@ impl ArchIntegrationTests {
     /// Reads a stream and prints it to stdout, but filters out
     /// terminal reset and clear-screen sequences.
     fn filter_and_print(stream: impl std::io::Read) {
-        let mut reader = std::io::BufReader::new(stream);
+        use std::io::{BufReader, Read, Write};
+        let mut reader = BufReader::new(stream);
         let mut buffer = [0u8; 1024];
         loop {
             match reader.read(&mut buffer) {
@@ -1427,7 +1428,6 @@ impl ArchIntegrationTests {
             }
         }
     }
-}
 }
 
 /// Run `cmd`, a cargo build emitting JSON messages, and return the path it
