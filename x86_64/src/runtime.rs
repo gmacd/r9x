@@ -10,7 +10,7 @@ pub fn panic(_info: &PanicInfo) -> ! {
     // Under test a panic is a failed run, and looping here would leave the
     // harness waiting for its timeout rather than reporting the failure.
     #[cfg(feature = "qemu-test")]
-    crate::qemu::exit(crate::qemu::FAIL);
+    crate::qemu::exit(port::qemu::FAIL);
 
     #[cfg(not(feature = "qemu-test"))]
     #[allow(clippy::empty_loop)]
