@@ -1408,7 +1408,7 @@ impl ArchIntegrationTests {
                     let mut i = 0;
                     while i < data.len() {
                         if data[i] == b'\x1b' {
-                            if i + 1 < data.len() && data[i+1] == b'[' {
+                            if i + 1 < data.len() && data[i + 1] == b'[' {
                                 let mut j = i + 2;
                                 while j < data.len() && (data[j] < 0x40) {
                                     j += 1;
@@ -1420,7 +1420,7 @@ impl ArchIntegrationTests {
                                     carry.extend_from_slice(&data[i..]);
                                     i = data.len();
                                 }
-                            } else if i + 1 < data.len() && data[i+1] == b'c' {
+                            } else if i + 1 < data.len() && data[i + 1] == b'c' {
                                 i += 2;
                             } else if i + 1 < data.len() {
                                 output.push(data[i]);
