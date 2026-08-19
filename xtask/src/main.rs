@@ -1094,7 +1094,9 @@ impl IntegrationTestStep {
                 verbose: self.verbose,
             };
             for name in &tests {
-                println!("\n--- {arch} {name} ---");
+                if self.verbose {
+                    println!("\n--- {arch} {name} ---");
+                }
                 ran += 1;
                 // An image that will not compile is that image failing, the
                 // same as a non-zero exit or a timeout.  Aborting here would
@@ -1113,7 +1115,9 @@ impl IntegrationTestStep {
                 let image = runner.image(name, &elf)?;
                 match runner.qemu(&image)? {
                     Some(code) if code == arch.passing_status() => {
-                        println!("{arch} {name}: ok")
+                        if self.verbose {
+                            println!("{arch} {name}: ok")
+                        }
                     }
                     Some(code) => {
                         println!("{arch} {name}: FAILED (exit {code})");
