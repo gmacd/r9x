@@ -36,7 +36,10 @@ jobs:
         run: cargo xtask test
 
   arch-ci:
-    runs-on: ubuntu-latest
+    # The aarch64 images boot a raspi4b, and the qemu 8.2 in
+    # ubuntu-latest (24.04) does not provide that machine; 9.2 in
+    # ubuntu-25.04 does.
+    runs-on: ubuntu-25.04
     timeout-minutes: 20
     strategy:
       matrix:
