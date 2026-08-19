@@ -40,7 +40,7 @@ jobs:
     # ubuntu-latest (24.04) does not provide that machine; the qemu 10.2
     # in ubuntu-26.04 does.
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       matrix:
         arch: [aarch64, riscv64, x86-64]
@@ -55,13 +55,24 @@ jobs:
             ~/.rustup/settings.toml
           key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Cache apt packages
+        # The .debs from a fast run are reused by later ones, so a slow
+        # apt mirror stops mattering once the cache is warm.
+        run: sudo chown "$(id -u):$(id -g)" /var/cache/apt/archives
+      - uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-qemu-2604
       - name: Install QEMU
         # apt has no idea when to give up, and a stalled mirror must not
         # hang the run: bound every call, and let install proceed on the
         # image's own package lists if update does not finish in time.
         run: |
-          sudo timeout -k 60 300 apt-get update || echo "warning: apt-get update timed out; using the image's package lists"
-          sudo DEBIAN_FRONTEND=noninteractive timeout -k 120 600 apt-get install -y qemu-system-arm qemu-system-riscv qemu-system-x86
+          sudo timeout -k 30 120 apt-get update || echo "warning: apt-get update timed out; using the image's package lists"
+          sudo DEBIAN_FRONTEND=noninteractive timeout -k 120 480 apt-get install -y qemu-system-arm qemu-system-riscv qemu-system-x86
+          qemu-system-aarch64 --version
+          qemu-system-riscv64 --version
+          qemu-system-x86_64 --version
       - name: Clippy
         run: cargo xtask clippy --arch ${{ matrix.arch }} --verbose
       - name: Dist
