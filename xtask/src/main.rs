@@ -1399,7 +1399,7 @@ impl ArchIntegrationTests {
         let mut buffer = [0u8; 1024];
         loop {
             match reader.read(&mut buffer) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let mut output = Vec::new();
                     let mut i = 0;
@@ -1429,7 +1429,6 @@ impl ArchIntegrationTests {
                     }
                     let _ = std::io::stdout().write_all(&output);
                 }
-                Err(_) => break,
             }
         }
     }
