@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
+  fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -21,16 +21,12 @@ jobs:
             ~/.rustup/toolchains
             ~/.rustup/update-hashes
             ~/.rustup/settings.toml
-          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # The integration tests boot kernel images; install the QEMU
-      # system emulators for all supported architectures.
-      - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm qemu-system-misc qemu-system-x86
-      - name: Format, check, clippy (all arches), test and integration test
-        run: cargo xtask ci --verbose
+          key: rustup-fmt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Run fmt
+        run: cargo xtask fmt --check
 
-  build:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -41,11 +37,50 @@ jobs:
             ~/.rustup/toolchains
             ~/.rustup/update-hashes
             ~/.rustup/settings.toml
-          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Build x86-64
-        run: cargo xtask build --arch x86-64 --verbose
-      - name: Build aarch64
-        run: cargo xtask build --arch aarch64 --verbose
-      - name: Build riscv64
-        run: cargo xtask build --arch riscv64 --verbose
+          key: rustup-check-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Run check
+        run: cargo xtask check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Cache the toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.rustup/settings.toml
+          key: rustup-test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Run tests
+        run: cargo xtask test
+
+  arch-ci:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [aarch64, riscv64, x86-64]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Cache the toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.rustup/settings.toml
+          key: rustup-arch-${{ matrix.arch }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-arm qemu-system-misc qemu-system-x86
+      - name: Clippy
+        run: cargo xtask clippy --arch ${{ matrix.arch }} --verbose
+      - name: Dist
+        run: cargo xtask dist --arch ${{ matrix.arch }} --verbose
+      - name: Integration Test
+        run: cargo xtask integration-test --arch ${{ matrix.arch }} --verbose
