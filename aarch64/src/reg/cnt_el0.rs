@@ -2,8 +2,10 @@ use core::fmt;
 
 use aarch64_cpu::asm::barrier;
 use aarch64_cpu::registers::{
-    CNTFRQ_EL0, CNTP_CTL_EL0, CNTP_CVAL_EL0, CNTPCT_EL0, Readable, Writeable,
+    CNTFRQ_EL0, CNTP_CTL_EL0, CNTP_CVAL_EL0, Readable, Writeable,
 };
+#[cfg(not(test))]
+use aarch64_cpu::registers::CNTPCT_EL0;
 use bitstruct::bitstruct;
 
 // CNTPCT_EL0 — 64-bit physical counter
