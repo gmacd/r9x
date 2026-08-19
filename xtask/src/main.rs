@@ -315,7 +315,7 @@ fn objcopy() -> String {
         path.push(host);
         path.push("bin");
         path.push("llvm-objcopy");
-        if path.exists() { path.into_os_string().into_string().unwrap() } else { "objcopy".into() }
+        if path.exists() { path.into_os_string().into_string().unwrap() } else { "llvm-objcopy".into() }
     };
     env_or("OBJCOPY", &llvm_objcopy)
 }
