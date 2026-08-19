@@ -1356,7 +1356,10 @@ impl ArchIntegrationTests {
         cmd.arg("-no-reboot");
         cmd.arg("-kernel").arg(image);
         cmd.stdin(process::Stdio::null());
-        if !self.verbose {
+        if self.verbose {
+            cmd.stdout(process::Stdio::piped());
+            cmd.stderr(process::Stdio::piped());
+        } else {
             cmd.stdout(process::Stdio::null());
             cmd.stderr(process::Stdio::null());
         }
@@ -1366,6 +1369,14 @@ impl ArchIntegrationTests {
         }
 
         let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", self.arch.qemu_system()))?;
+        if self.verbose {
+            let stdout = child.stdout.take().expect("stdout was piped");
+            let stderr = child.stderr.take().expect("stderr was piped");
+            std::thread::spawn(move || {
+                filter_and_print(stdout);
+                filter_and_print(stderr);
+            });
+        }
         let deadline = std::time::Instant::now() + self.timeout;
         loop {
             if let Some(status) = child.try_wait()? {
@@ -1379,6 +1390,44 @@ impl ArchIntegrationTests {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+
+    /// Reads a stream and prints it to stdout, but filters out
+    /// terminal reset and clear-screen sequences.
+    fn filter_and_print(stream: impl std::io::Read) {
+        let mut reader = std::io::BufReader::new(stream);
+        let mut buffer = [0u8; 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let mut output = Vec::new();
+                    let mut i = 0;
+                    while i < n {
+                        if buffer[i] == b'\x1b' && i + 1 < n && buffer[i+1] == b'[' {
+                            // Skip common clear-screen and reset sequences
+                            // \x1b[2J (clear screen), \x1b[H (home), etc.
+                            let mut j = i + 2;
+                            while j < n && buffer[j] != b';' && buffer[j] != b'm' && buffer[j] != b'J' && buffer[j] != b'H' {
+                                j += 1;
+                            }
+                            if j < n {
+                                j += 1; // consume the terminator
+                            }
+                            i = j;
+                        } else if buffer[i] == b'\x1b' && i + 1 < n && buffer[i+1] == b'c' {
+                            i += 2; // skip RIS reset
+                        } else {
+                            output.push(buffer[i]);
+                            i += 1;
+                        }
+                    }
+                    let _ = std::io::stdout().write_all(&output);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+}
 }
 
 /// Run `cmd`, a cargo build emitting JSON messages, and return the path it
