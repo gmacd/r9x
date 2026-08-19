@@ -75,6 +75,10 @@ jobs:
           qemu-system-aarch64 --version
           qemu-system-riscv64 --version
           qemu-system-x86_64 --version
+          # apt recreated its 700 _apt-owned subdirectories during the
+          # install, which would make the cache save fail to read them:
+          # hand the tree back to the runner user before the job ends.
+          sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives
       - name: Clippy
         run: cargo xtask clippy --arch ${{ matrix.arch }} --verbose
       - name: Dist
