@@ -1071,7 +1071,9 @@ impl IntegrationTestStep {
                 if no_stanza {
                     println!("{arch}: tests/{name}.rs has no [[test]] entry, so nothing builds it");
                 } else {
-                    println!("{arch}: tests/{name}.rs has a [[test]] entry, but is missing the {QEMU_TEST_FEATURE} feature");
+                    println!(
+                        "{arch}: tests/{name}.rs has a [[test]] entry, but is missing the {QEMU_TEST_FEATURE} feature"
+                    );
                 }
                 undeclared.push(format!("{arch} {name}"));
             }

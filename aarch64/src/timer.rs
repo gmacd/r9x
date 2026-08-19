@@ -230,16 +230,16 @@ mod tests {
         // Setup: 100Hz timer (10ms period)
         TIMER_FREQ.store(100, Ordering::Relaxed);
         let period = Duration::from_millis(10);
-        
+
         static CALLBACK: MockCallback = MockCallback;
         static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
-        
+
         // Start timer at t=0. Deadline should be 10 ticks.
         set_mock_count(0);
         TIMER.period_ticks.store(10, Ordering::Relaxed);
         TIMER.deadline_ticks.store(10, Ordering::Relaxed);
         TIMER.active.store(true, Ordering::Release);
-        
+
         // Manually register the timer in the table
         with_timers(|timers| {
             timers[0] = Some(&TIMER);
@@ -247,22 +247,21 @@ mod tests {
 
         // Simulate time passing to t=15 (past deadline)
         set_mock_count(15);
-        
+
         // Fire the interrupt handler
         interrupt_handler();
-        
+
         // The new deadline should be clamped to the future.
         // current = 15, old_deadline = 10, period = 10.
         // next = 10 + ((15-10)/10 + 1)*10 = 10 + (0+1)*10 = 20.
         assert_eq!(TIMER.deadline_ticks.load(Ordering::Relaxed), 20);
-        
+
         // Simulate a very slow callback (time jumps to t=35)
         set_mock_count(35);
         interrupt_handler();
-        
+
         // current = 35, old_deadline = 20, period = 10.
         // next = 20 + ((35-20)/10 + 1)*10 = 20 + (1+1)*10 = 40.
         assert_eq!(TIMER.deadline_ticks.load(Ordering::Relaxed), 40);
     }
 }
-
