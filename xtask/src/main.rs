@@ -1407,7 +1407,7 @@ impl ArchIntegrationTests {
                         if buffer[i] == b'\x1b' && i + 1 < n && buffer[i + 1] == b'[' {
                             // CSI (Control Sequence Introducer) sequences: ESC [ ...
                             let mut j = i + 2;
-                            while j < n && (buffer[j] < b' ' || buffer[j] > b'~') {
+                            while j < n && (buffer[j] < 0x40) {
                                 j += 1;
                             }
                             if j < n {
