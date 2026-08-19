@@ -1405,19 +1405,13 @@ impl ArchIntegrationTests {
                     let mut i = 0;
                     while i < n {
                         if buffer[i] == b'\x1b' && i + 1 < n && buffer[i + 1] == b'[' {
-                            // Skip common clear-screen and reset sequences
-                            // \x1b[2J (clear screen), \x1b[H (home), etc.
+                            // CSI (Control Sequence Introducer) sequences: ESC [ ...
                             let mut j = i + 2;
-                            while j < n
-                                && buffer[j] != b';'
-                                && buffer[j] != b'm'
-                                && buffer[j] != b'J'
-                                && buffer[j] != b'H'
-                            {
+                            while j < n && (buffer[j] < b' ' || buffer[j] > b'~') {
                                 j += 1;
                             }
                             if j < n {
-                                j += 1; // consume the terminator
+                                j += 1; // consume the final byte (0x40-0x7E)
                             }
                             i = j;
                         } else if buffer[i] == b'\x1b' && i + 1 < n && buffer[i + 1] == b'c' {
