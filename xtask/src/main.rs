@@ -1576,7 +1576,7 @@ impl CiStep {
 }
 
 fn heading(step: &str) {
-    println!("\n=== xtask: {step} ===");
+    println!("\nxtask: {step}");
 }
 
 struct CleanStep {}
