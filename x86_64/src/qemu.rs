@@ -11,7 +11,6 @@ use crate::pio::outl;
 use port::qemu::*;
 
 /// Stop the machine, handing `code` back to QEMU's own exit status.
-
 ///
 /// Returns only if the device is absent, in which case there is no way to
 /// stop and the caller's timeout is what ends the run.
