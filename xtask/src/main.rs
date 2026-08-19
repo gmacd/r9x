@@ -318,7 +318,7 @@ fn objcopy() -> String {
         if path.exists() {
             path.into_os_string().into_string().unwrap()
         } else {
-            "llvm-objcopy".into()
+            "objcopy".into()
         }
     };
     env_or("OBJCOPY", &llvm_objcopy)

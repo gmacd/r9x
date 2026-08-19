@@ -77,7 +77,7 @@ jobs:
       - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-arm qemu-system-misc qemu-system-x86
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y binutils qemu-system-arm qemu-system-misc qemu-system-x86
       - name: Clippy
         run: cargo xtask clippy --arch ${{ matrix.arch }} --verbose
       - name: Dist
