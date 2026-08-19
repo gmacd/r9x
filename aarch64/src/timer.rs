@@ -165,7 +165,6 @@ fn duration_to_ticks(dur: Duration) -> u64 {
 static SAMPLED_IN_TEST: bool = true;
 
 /// Hardware interrupt handler — called from the trap handler.
-
 ///
 /// Fires all due timers (outside the table lock, so a callback may
 /// start or cancel timers) and arms the next deadline, which is also
