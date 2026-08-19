@@ -1404,18 +1404,23 @@ impl ArchIntegrationTests {
                     let mut output = Vec::new();
                     let mut i = 0;
                     while i < n {
-                        if buffer[i] == b'\x1b' && i + 1 < n && buffer[i+1] == b'[' {
+                        if buffer[i] == b'\x1b' && i + 1 < n && buffer[i + 1] == b'[' {
                             // Skip common clear-screen and reset sequences
                             // \x1b[2J (clear screen), \x1b[H (home), etc.
                             let mut j = i + 2;
-                            while j < n && buffer[j] != b';' && buffer[j] != b'm' && buffer[j] != b'J' && buffer[j] != b'H' {
+                            while j < n
+                                && buffer[j] != b';'
+                                && buffer[j] != b'm'
+                                && buffer[j] != b'J'
+                                && buffer[j] != b'H'
+                            {
                                 j += 1;
                             }
                             if j < n {
                                 j += 1; // consume the terminator
                             }
                             i = j;
-                        } else if buffer[i] == b'\x1b' && i + 1 < n && buffer[i+1] == b'c' {
+                        } else if buffer[i] == b'\x1b' && i + 1 < n && buffer[i + 1] == b'c' {
                             i += 2; // skip RIS reset
                         } else {
                             output.push(buffer[i]);
