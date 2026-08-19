@@ -309,7 +309,7 @@ fn objcopy() -> String {
         let home = env_or("RUSTUP_HOME", "");
         let mut path = PathBuf::from(home);
         path.push("toolchains");
-        path.push(toolchain);
+        path.push(&toolchain);
         path.push("lib");
         path.push("rustlib");
         path.push(host);
