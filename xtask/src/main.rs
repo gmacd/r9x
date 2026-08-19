@@ -767,6 +767,8 @@ impl TestStep {
             cmd.args(["test", "--package", package, targets, "--target", &target.to_string()]);
             if self.json_output {
                 cmd.arg("--message-format=json").arg("--quiet");
+            } else if !self.verbose {
+                cmd.arg("--quiet");
             }
 
             if self.verbose {
