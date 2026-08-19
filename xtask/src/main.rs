@@ -298,30 +298,31 @@ fn cargo() -> String {
 }
 
 fn objcopy() -> String {
-    let llvm_objcopy = {
-        let toolchain = env_or("RUSTUP_TOOLCHAIN", "nightly-x86_64-unknown-none");
+    if let Ok(objcopy) = env::var("OBJCOPY") {
+        return objcopy;
+    }
 
-        // find host architecture by taking last 3 segments from toolchain
-        let mut arch_segments: Box<[_]> = toolchain.split('-').rev().take(3).collect();
-        arch_segments.reverse();
-        let host = arch_segments.join("-");
-
-        let home = env_or("RUSTUP_HOME", "");
-        let mut path = PathBuf::from(home);
-        path.push("toolchains");
-        path.push(&toolchain);
-        path.push("lib");
-        path.push("rustlib");
-        path.push(host);
-        path.push("bin");
-        path.push("llvm-objcopy");
-        if path.exists() {
-            path.into_os_string().into_string().unwrap()
-        } else {
-            "llvm-objcopy".into()
+    // The llvm-tools component installs llvm-objcopy in the toolchain's
+    // host rustlib directory, which is the only rustlib directory that
+    // carries a bin directory at all.  Finding it there means the host
+    // triple never has to be spelled out, and no host binutils or llvm
+    // package is needed.
+    let home = env::var("RUSTUP_HOME")
+        .ok()
+        .or_else(|| env::var("HOME").ok().map(|home| format!("{home}/.rustup")));
+    if let (Some(home), Some(toolchain)) = (home, env::var("RUSTUP_TOOLCHAIN").ok()) {
+        let rustlib =
+            Path::new(&home).join("toolchains").join(&toolchain).join("lib").join("rustlib");
+        if let Ok(entries) = std::fs::read_dir(rustlib) {
+            for entry in entries.flatten() {
+                let path = entry.path().join("bin").join("llvm-objcopy");
+                if path.is_file() {
+                    return path.into_os_string().into_string().unwrap();
+                }
+            }
         }
-    };
-    env_or("OBJCOPY", &llvm_objcopy)
+    }
+    "llvm-objcopy".into()
 }
 
 fn load_config(arch: Arch, matches: &clap::ArgMatches) -> Configuration {
