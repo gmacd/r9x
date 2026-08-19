@@ -76,10 +76,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Install LLVM tools
         run: rustup component add llvm-tools-preview
-      - name: Install QEMU
+      - name: Install Toolchain Tools
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y binutils qemu-system-arm qemu-system-misc qemu-system-x86
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y binutils llvm qemu-system-arm qemu-system-misc qemu-system-x86
       - name: Clippy
         run: cargo xtask clippy --arch ${{ matrix.arch }} --verbose
       - name: Dist
