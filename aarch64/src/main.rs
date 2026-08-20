@@ -14,7 +14,7 @@ use aarch64::kmem::{
 use aarch64::param::KZERO;
 use aarch64::timer::{Timer, TimerCallback};
 use aarch64::vm::{Entry, RootPageTableType, VaMapping};
-use aarch64::{boot, mailbox, pagealloc, vm};
+use aarch64::{boot, mailbox, pagealloc, process, vm};
 use alloc::boxed::Box;
 use core::time::Duration;
 use port::mem::{PhysRange, VirtRange};
@@ -82,6 +82,16 @@ fn print_stacks() {
     println!("Interrupt stack:{range} ({range_size:#x})");
 }
 
+/// The first process's whole program: `svc #0` (sysexit).  AArch64
+/// `svc` is 0xd4000001 | (number << 8), little-endian (Arm ARM DDI
+/// 0487).
+const FIRST_PROCESS_TEXT: [u8; 4] = [0x01, 0x00, 0x00, 0xd4];
+
+/// Where the first process's text and stack are mapped: the TTBR0
+/// (user) half, not the TTBR1 (kernel) half.
+const USER_TEXT_VA: usize = 0x1000;
+const USER_STACK_VA: usize = 0x10000;
+
 /// dtb_va is the virtual address of the DTB structure.  The physical address is
 /// assumed to be dtb_va-KZERO.
 #[unsafe(no_mangle)]
@@ -148,6 +158,13 @@ pub extern "C" fn main9(dtb_va: usize) {
 
     // vmdebug::print_recursive_tables(RootPageTableType::Kernel);
     // vmdebug::print_recursive_tables(RootPageTableType::User);
+
+    // The first process: its whole program is the sysexit, and it
+    // enters with IRQs unmasked, so the timers keep firing while it
+    // runs.  The kernel resumes here when it exits.
+    println!("starting first process");
+    let status = process::run(&FIRST_PROCESS_TEXT, USER_TEXT_VA, USER_STACK_VA);
+    println!("first process returned, status {status}");
 
     let _b = Box::new("ddododo");
 
