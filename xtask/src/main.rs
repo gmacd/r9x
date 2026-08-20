@@ -254,6 +254,11 @@ fn main() {
                 clap::arg!(--verbose "Print commands"),
                 clap::arg!(--dump_dtb <file> "Dump the DTB from QEMU to a file")
                     .value_parser(clap::value_parser!(String)),
+                clap::arg!(--timeout <secs> "Seconds before a hung guest is killed; 0 waits indefinitely")
+                    .value_parser(clap::value_parser!(u64))
+                    .default_value("15"),
+                clap::arg!(--image <name> "Build and run one of the arch's QEMU test images instead of the kernel")
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new()),
             ]),
         )
         .subcommand(clap::Command::new("clean").about("Cargo clean"))
@@ -499,6 +504,8 @@ struct QemuStep {
     kvm: bool,
     dump_dtb: String,
     verbose: bool,
+    timeout_secs: u64,
+    image: String,
 }
 
 impl QemuStep {
@@ -515,8 +522,42 @@ impl QemuStep {
             .unwrap_or(&"".to_string())
             .clone();
         let verbose = verbose(matches);
+        let timeout_secs = *matches.get_one::<u64>("timeout").expect("timeout has a default");
+        let image = matches.get_one::<String>("image").cloned().unwrap_or_default();
 
-        Self { arch, config, profile, wait_for_gdb, kvm, dump_dtb, verbose }
+        Self { arch, config, profile, wait_for_gdb, kvm, dump_dtb, verbose, timeout_secs, image }
+    }
+
+    /// Spawn QEMU with the console attached and wait for it to exit on
+    /// its own, or for the timeout: a hung guest must not outlive the
+    /// command that started it.  A timeout kills the guest and is an
+    /// error; `--timeout 0` waits indefinitely (gdb sessions).
+    fn run_bounded(&self, mut cmd: Command) -> Result<()> {
+        if self.verbose {
+            println!("Executing {cmd:?}");
+        }
+        let mut child = cmd.spawn().map_err(|e| format!("qemu: {e}"))?;
+        let deadline = (self.timeout_secs > 0)
+            .then(|| std::time::Instant::now() + Duration::from_secs(self.timeout_secs));
+        loop {
+            if let Some(status) = child.try_wait()? {
+                // A guest that finished maps onto QEMU's exit code the
+                // arch-dependent way; only the passing status is a pass.
+                let code = status.code().unwrap_or(-1);
+                if code == self.arch.passing_status() {
+                    return Ok(());
+                }
+                return Err(format!("qemu failed (exit {code})").into());
+            }
+            if let Some(deadline) = deadline
+                && std::time::Instant::now() >= deadline
+            {
+                child.kill()?;
+                child.wait()?;
+                return Err(format!("qemu timed out after {}s; killed", self.timeout_secs).into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     fn run(self) -> Result<()> {
@@ -526,6 +567,23 @@ impl QemuStep {
         if self.kvm && self.arch != Arch::X86_64 {
             return Err("KVM only supported under x86-64".into());
         }
+
+        // A named image is one of this arch's QEMU test images: built
+        // the way the integration tests build them, so `xtask qemu`
+        // stays the single bounded way to watch a guest.
+        let image_path = if self.image.is_empty() {
+            None
+        } else {
+            let runner = ArchIntegrationTests {
+                arch: self.arch,
+                config: self.config.clone(),
+                profile: self.profile,
+                timeout: Duration::from_secs(self.timeout_secs),
+                verbose: self.verbose,
+            };
+            let elf = runner.compile(&self.image)?;
+            Some(runner.image(&self.image, &elf)?)
+        };
 
         match self.arch {
             Arch::Aarch64 => {
@@ -546,58 +604,75 @@ impl QemuStep {
                 if self.wait_for_gdb {
                     cmd.arg("-s").arg("-S");
                 }
-                cmd.arg("-kernel");
-                cmd.arg(out.join("aarch64-qemu.gz"));
+                match &image_path {
+                    Some(image) => {
+                        // Test images leave QEMU via semihosting, and a
+                        // rebooted image would just start again.
+                        cmd.arg("-semihosting");
+                        cmd.arg("-no-reboot");
+                        cmd.arg("-kernel");
+                        cmd.arg(image);
+                    }
+                    None => {
+                        cmd.arg("-kernel");
+                        cmd.arg(out.join("aarch64-qemu.gz"));
+                    }
+                }
                 cmd.current_dir(workspace());
                 if self.verbose {
                     // Show exception level change events in stdout
                     cmd.arg("-d");
                     cmd.arg("int");
-
-                    println!("Executing {cmd:?}");
                 }
-                let status = annotated_status(&mut cmd)?;
-                if !status.success() {
-                    return Err("qemu failed".into());
-                }
+                self.run_bounded(cmd)
             }
             Arch::Riscv64 => {
                 let mut cmd = Command::new(qemu_system);
                 cmd.arg("-nographic");
                 //cmd.arg("-curses");
                 // cmd.arg("-bios").arg("none");
-                let dump_dtb = &self.dump_dtb;
-                if !dump_dtb.is_empty() {
-                    cmd.arg("-machine").arg(format!("virt,dumpdtb={dump_dtb}"));
-                } else {
-                    cmd.arg("-machine").arg("virt");
+                match &image_path {
+                    // The integration test images run on the bare virt
+                    // machine, mirroring the harness.
+                    Some(image) => {
+                        cmd.arg("-machine").arg("virt");
+                        cmd.arg("-cpu").arg("rv64");
+                        cmd.arg("-smp").arg("4");
+                        cmd.arg("-m").arg("1024M");
+                        cmd.arg("-serial").arg("mon:stdio");
+                        cmd.arg("-no-reboot");
+                        cmd.arg("-kernel");
+                        cmd.arg(image);
+                    }
+                    None => {
+                        let dump_dtb = &self.dump_dtb;
+                        if !dump_dtb.is_empty() {
+                            cmd.arg("-machine").arg(format!("virt,dumpdtb={dump_dtb}"));
+                        } else {
+                            cmd.arg("-machine").arg("virt");
+                        }
+                        cmd.arg("-cpu").arg("rv64");
+                        // FIXME: This is not needed as of now, and will only work once the
+                        // FIXME: disk.bin is also taken care of. Doesn't exist by default.
+                        if false {
+                            cmd.arg("-drive").arg("file=disk.bin,format=raw,id=hd0");
+                            cmd.arg("-device").arg("virtio-blk-device,drive=hd0");
+                        }
+                        cmd.arg("-netdev").arg("type=user,id=net0");
+                        cmd.arg("-device").arg("virtio-net-device,netdev=net0");
+                        cmd.arg("-smp").arg("4");
+                        cmd.arg("-m").arg("1024M");
+                        cmd.arg("-serial").arg("mon:stdio");
+                        if self.wait_for_gdb {
+                            cmd.arg("-s").arg("-S");
+                        }
+                        cmd.arg("-d").arg("guest_errors,unimp");
+                        cmd.arg("-kernel");
+                        cmd.arg(out.join("riscv64"));
+                    }
                 }
-                cmd.arg("-cpu").arg("rv64");
-                // FIXME: This is not needed as of now, and will only work once the
-                // FIXME: disk.bin is also taken care of. Doesn't exist by default.
-                if false {
-                    cmd.arg("-drive").arg("file=disk.bin,format=raw,id=hd0");
-                    cmd.arg("-device").arg("virtio-blk-device,drive=hd0");
-                }
-                cmd.arg("-netdev").arg("type=user,id=net0");
-                cmd.arg("-device").arg("virtio-net-device,netdev=net0");
-                cmd.arg("-smp").arg("4");
-                cmd.arg("-m").arg("1024M");
-                cmd.arg("-serial").arg("mon:stdio");
-                if self.wait_for_gdb {
-                    cmd.arg("-s").arg("-S");
-                }
-                cmd.arg("-d").arg("guest_errors,unimp");
-                cmd.arg("-kernel");
-                cmd.arg(out.join("riscv64"));
                 cmd.current_dir(workspace());
-                if self.verbose {
-                    println!("Executing {cmd:?}");
-                }
-                let status = annotated_status(&mut cmd)?;
-                if !status.success() {
-                    return Err("qemu failed".into());
-                }
+                self.run_bounded(cmd)
             }
             Arch::X86_64 => {
                 let mut cmd = Command::new(qemu_system);
@@ -611,34 +686,43 @@ impl QemuStep {
                     cmd.arg("-M").arg("q35");
                     cmd.arg("-cpu").arg("qemu64,pdpe1gb,xsaveopt,fsgsbase,apic,msr");
                 }
-                cmd.arg("-smp");
-                cmd.arg("8");
-                cmd.arg("-s");
-                cmd.arg("-m");
-                cmd.arg("8192");
-                if self.wait_for_gdb {
-                    cmd.arg("-s").arg("-S");
+                match &image_path {
+                    // The integration test images exit through
+                    // isa-debug-exit, mirroring the harness.
+                    Some(image) => {
+                        cmd.arg("-M").arg("q35");
+                        cmd.arg("-cpu").arg("qemu64,pdpe1gb,xsaveopt,fsgsbase,apic,msr");
+                        cmd.arg("-smp").arg("8");
+                        cmd.arg("-m").arg("8192");
+                        cmd.arg("-serial").arg("mon:stdio");
+                        cmd.arg("-device").arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
+                        cmd.arg("-no-reboot");
+                        cmd.arg("-kernel");
+                        cmd.arg(image);
+                    }
+                    None => {
+                        cmd.arg("-smp");
+                        cmd.arg("8");
+                        cmd.arg("-s");
+                        cmd.arg("-m");
+                        cmd.arg("8192");
+                        if self.wait_for_gdb {
+                            cmd.arg("-s").arg("-S");
+                        }
+                        //cmd.arg("-device");
+                        //cmd.arg("ahci,id=ahci0");
+                        //cmd.arg("-drive");
+                        //cmd.arg("id=sdahci0,file=sdahci0.img,if=none");
+                        //cmd.arg("-device");
+                        //cmd.arg("ide-hd,drive=sdahci0,bus=ahci0.0");
+                        cmd.arg("-kernel");
+                        cmd.arg(out.join("r9.elf32"));
+                    }
                 }
-                //cmd.arg("-device");
-                //cmd.arg("ahci,id=ahci0");
-                //cmd.arg("-drive");
-                //cmd.arg("id=sdahci0,file=sdahci0.img,if=none");
-                //cmd.arg("-device");
-                //cmd.arg("ide-hd,drive=sdahci0,bus=ahci0.0");
-                cmd.arg("-kernel");
-                cmd.arg(out.join("r9.elf32"));
                 cmd.current_dir(workspace());
-                if self.verbose {
-                    println!("Executing {cmd:?}");
-                }
-                let status = annotated_status(&mut cmd)?;
-                if !status.success() {
-                    return Err("qemu failed".into());
-                }
+                self.run_bounded(cmd)
             }
-        };
-
-        Ok(())
+        }
     }
 }
 

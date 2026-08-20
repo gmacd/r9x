@@ -11,7 +11,7 @@ use std::{
 };
 
 /// build section
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Build {
     /// The buildflags controls build-time operations and compiler settings.
     pub buildflags: Option<Vec<String>>,
@@ -46,7 +46,7 @@ pub struct Build {
 /// #[cfg(dev_foo = "baz")]
 /// pub mod foobaz;
 /// ```
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub dev: Option<Vec<String>>,
     pub features: Option<Vec<String>>,
@@ -70,7 +70,7 @@ pub struct Config {
 
 /// Qemu section
 /// Affects arguments to be passed to qemu - doesn't affect build artefacts.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Qemu {
     /// Machine (`-M`) value for qemu: raspi4b, etc.
     pub machine: Option<String>,
@@ -80,7 +80,7 @@ pub struct Qemu {
 }
 
 /// the TOML document
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Configuration {
     pub build: Option<Build>,
     pub config: Option<Config>,

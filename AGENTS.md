@@ -23,6 +23,10 @@ The project must be free of errors and warnings at all times, including those fr
   - x86-64: `cargo xtask clippy --arch x86-64`
 - Test:
   - `cargo xtask test`
+- Run a guest (bounded: `--timeout` seconds, default 15, kills the
+  guest when it expires):
+  - kernel image: `cargo xtask qemu --arch aarch64`
+  - one test image: `cargo xtask qemu --arch aarch64 --image user_process`
 - Integration test (whole kernel images run under QEMU):
   - all arches: `cargo xtask integration-test`
   - one arch: `cargo xtask integration-test --arch aarch64`
