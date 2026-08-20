@@ -91,17 +91,32 @@ impl fmt::Display for Arch {
 
 struct RustupState {
     installed_targets: Vec<Triple>,
-    curr_toolchain: String,
+    host_triple: String,
 }
 
 impl RustupState {
     /// Runs rustup command to get a list of all installed toolchains.
-    /// Also caches the current toolchain.
+    /// Also caches the host triple.
     fn new() -> Result<Self> {
-        let curr_toolchain = env::var("RUSTUP_TOOLCHAIN").map_err(|_| {
-            "RUSTUP_TOOLCHAIN is not set: check, clippy and test need a rustup-managed toolchain"
-        })?;
-        Ok(Self { installed_targets: Self::installed_rustup_targets()?, curr_toolchain })
+        Ok(Self {
+            installed_targets: Self::installed_rustup_targets()?,
+            host_triple: Self::host_triple()?,
+        })
+    }
+
+    /// The triple rustc actually runs on, from `rustc -vV`.  The toolchain
+    /// name is no guide: a linked toolchain can be called anything.
+    fn host_triple() -> Result<String> {
+        let output =
+            Command::new("rustc").arg("-vV").output().map_err(|e| format!("rustc -vV: {e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string().into());
+        }
+        String::from_utf8(output.stdout)?
+            .lines()
+            .find_map(|line| line.strip_prefix("host: "))
+            .map(str::to_string)
+            .ok_or_else(|| "rustc -vV reported no host triple".into())
     }
 
     /// Call `rustup target list --installed` to get all installed target triples
@@ -120,16 +135,21 @@ impl RustupState {
         Ok(String::from_utf8(output.stdout)?.lines().flat_map(Triple::from_str).collect())
     }
 
-    /// For the given arch, return a compatible toolchain triple that is
-    /// installed and can be used by cargo check.  It will prefer the default
-    /// toolchain if it's a match, otherwise it will look for the
-    /// <arch-unknown-linux-gnu> toolchain.
+    /// For the given arch, return a compatible target triple that is
+    /// installed and can be used by cargo check.  It prefers the host's
+    /// own triple (whose binaries can run), and otherwise looks for
+    /// <arch>-unknown-linux-gnu.
     fn std_supported_target(&self, arch: &str) -> Option<&Triple> {
         let arch = Self::target_arch(arch);
-        self.installed_targets.iter().filter(|&t| t.architecture.to_string() == arch).find(|&t| {
-            self.curr_toolchain.ends_with(&t.to_string())
-                || t.to_string() == arch.to_owned() + "-unknown-linux-gnu"
-        })
+        let matching: Vec<&Triple> =
+            self.installed_targets.iter().filter(|t| t.architecture.to_string() == arch).collect();
+        matching
+            .iter()
+            .find(|t| t.to_string() == self.host_triple)
+            .or_else(|| {
+                matching.iter().find(|t| t.to_string() == format!("{arch}-unknown-linux-gnu"))
+            })
+            .copied()
     }
 
     /// Return the arch in a form compatible with the supported targets and toolchains
