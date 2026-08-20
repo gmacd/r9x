@@ -35,6 +35,27 @@ jobs:
       - name: Run tests
         run: cargo xtask test
 
+  aarch64-tests:
+    # Arch unit tests run natively only (TestStep): the aarch64 lib
+    # assembles inline asm the x86_64 host in checks cannot, so those
+    # 11 tests need an aarch64 host.  No QEMU is involved, hence no
+    # ubuntu-26.04 requirement.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Cache the toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.rustup/settings.toml
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Run tests
+        run: cargo xtask test
+
   arch-ci:
     # The aarch64 images boot a raspi4b, and the qemu 8.2 in
     # ubuntu-latest (24.04) does not provide that machine; the qemu 10.2
