@@ -12,13 +12,11 @@ use aarch64::kmem::{
     total_kernel_physrange,
 };
 use aarch64::param::KZERO;
-use aarch64::timer::{Timer, TimerCallback};
 use aarch64::vm::{Entry, RootPageTableType, VaMapping};
 use aarch64::{boot, mailbox, pagealloc, process, vm};
 use alloc::boxed::Box;
-use core::time::Duration;
 use port::mem::{PhysRange, VirtRange};
-use port::{iprintln, println};
+use port::println;
 
 fn print_memory_range(name: &str, range: &PhysRange) {
     let size = range.size();
@@ -168,62 +166,11 @@ pub extern "C" fn main9(dtb_va: usize) {
 
     let _b = Box::new("ddododo");
 
-    PC1_TIMER.start();
-    PC2_TIMER.start();
-    STOP_PC1_TIMER.start();
-
     println!("looping now");
 
     #[allow(clippy::empty_loop)]
     loop {}
 }
 
-// Temp, test-related code
-
-use core::sync::atomic::{AtomicU32, Ordering};
-
-/// Prints "<name>:<count>" each firing; stops itself after `limit`
-/// extra firings (0 = run until cancelled).
-struct Ticker {
-    name: &'static str,
-    counter: AtomicU32,
-    limit: u32,
-}
-
-impl TimerCallback for Ticker {
-    fn fire(&self) -> bool {
-        let n = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-        iprintln!("{}:{}", self.name, n);
-        if self.limit == 0 || n <= self.limit {
-            true
-        } else {
-            iprintln!("stopping {}", self.name);
-            false
-        }
-    }
-}
-
-/// One-shot callback that cancels another timer.
-struct CancelTimer {
-    victim: &'static Timer,
-    msg: &'static str,
-}
-
-impl TimerCallback for CancelTimer {
-    fn fire(&self) -> bool {
-        iprintln!("{}", self.msg);
-        self.victim.cancel();
-        false
-    }
-}
-
-static PC1: Ticker = Ticker { name: "pc1", counter: AtomicU32::new(0), limit: 0 };
-static PC1_TIMER: Timer = Timer::periodic(Duration::from_secs(1), &PC1);
-
-static PC2: Ticker = Ticker { name: "pc2", counter: AtomicU32::new(0), limit: 3 };
-static PC2_TIMER: Timer = Timer::periodic(Duration::from_secs(2), &PC2);
-
-static STOP_PC1: CancelTimer = CancelTimer { victim: &PC1_TIMER, msg: "stopping pc1" };
-static STOP_PC1_TIMER: Timer = Timer::new(Duration::from_secs(5), &STOP_PC1);
-
-// User process setup now lives in aarch64/tests/user_process.rs.
+// User process setup now lives in aarch64/tests/user_process.rs, and
+// the timer exercise in aarch64/tests/timers.rs.
