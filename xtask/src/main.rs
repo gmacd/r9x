@@ -754,18 +754,14 @@ impl TestStep {
             let mut cmd = Command::new(cargo());
             cmd.current_dir(workspace());
 
-            // What there is to test differs by package.  port is a host
-            // library with integration tests, which --tests picks up and
-            // --lib would miss.  aarch64, riscv64, and x86_64 have their
-            // tests in their libraries, and their binaries cannot be built
-            // for a host: the boot assembly is only assembled for the bare
-            // metal target.
-            let targets = match package {
-                "port" => "--tests",
-                "aarch64" | "riscv64" | "x86_64" => "--lib",
-                _ => "--bins",
-            };
-            cmd.args(["test", "--package", package, targets, "--target", &target.to_string()]);
+            // --tests covers every package's lib unit tests, its binary's,
+            // and any integration tests.  The arch binaries build for a
+            // host in test mode: no_main is off under cfg(test), and the
+            // boot assembly is position-independent code with no host
+            // entry symbol to collide with.  The QEMU integration images
+            // stay out by themselves: cargo skips a target whose
+            // required-features are not requested.
+            cmd.args(["test", "--package", package, "--tests", "--target", &target.to_string()]);
             if self.json_output {
                 cmd.arg("--message-format=json").arg("--quiet");
             } else if !self.verbose {
