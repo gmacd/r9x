@@ -51,6 +51,12 @@ impl Arch {
     /// Every architecture r9 supports, in the order the gates run them.
     const ALL: [Arch; 3] = [Arch::Aarch64, Arch::Riscv64, Arch::X86_64];
 
+    /// The workspace package for this arch.  Also what
+    /// `std::env::consts::ARCH` reports on a host of this architecture.
+    fn package(&self) -> String {
+        self.to_string().to_lowercase()
+    }
+
     fn from(matches: &clap::ArgMatches) -> Self {
         *matches.get_one::<Arch>("arch").unwrap_or(&Arch::X86_64)
     }
@@ -855,10 +861,10 @@ impl TestStep {
         // <arch>-unknown-linux-gnu target instead, which is why
         // rust-toolchain.toml names one for aarch64.  riscv64 and x86_64
         // have no tests today; the selection still runs whatever is added.
-        let mut packages: Vec<&str> = vec!["port"];
-        for arch in ["aarch64", "riscv64", "x86_64"] {
-            if arch == host {
-                packages.push(arch);
+        let mut packages: Vec<String> = vec!["port".to_string()];
+        for arch in Arch::ALL {
+            if arch.package() == host {
+                packages.push(arch.package());
             }
         }
 
@@ -873,7 +879,7 @@ impl TestStep {
             // entry symbol to collide with.  The QEMU integration images
             // stay out by themselves: cargo skips a target whose
             // required-features are not requested.
-            cmd.args(["test", "--package", package, "--tests", "--target", &target.to_string()]);
+            cmd.args(["test", "--package", &package, "--tests", "--target", &target.to_string()]);
             if self.json_output {
                 cmd.arg("--message-format=json").arg("--quiet");
             } else if !self.verbose {
@@ -996,34 +1002,25 @@ impl CheckStep {
         // To run check for bins and lib we use the default toolchain, which has
         // been set to the OS-independent arch toolchain in each Cargo.toml file.
         // The same applies to tests and benches for non-arch-specific lib packages.
-        let bins_lib_package_cmd_args = vec![
-            vec![
-                "check".to_string(),
-                "--package".to_string(),
-                "aarch64".to_string(),
-                "--bins".to_string(),
-            ],
-            vec![
-                "check".to_string(),
-                "--package".to_string(),
-                "riscv64".to_string(),
-                "--bins".to_string(),
-            ],
-            vec![
-                "check".to_string(),
-                "--package".to_string(),
-                "x86_64".to_string(),
-                "--bins".to_string(),
-            ],
-            vec![
-                "check".to_string(),
-                "--package".to_string(),
-                "port".to_string(),
-                "--lib".to_string(),
-                "--tests".to_string(),
-                "--benches".to_string(),
-            ],
-        ];
+        let mut bins_lib_package_cmd_args: Vec<Vec<String>> = Arch::ALL
+            .iter()
+            .map(|arch| {
+                vec![
+                    "check".to_string(),
+                    "--package".to_string(),
+                    arch.package(),
+                    "--bins".to_string(),
+                ]
+            })
+            .collect();
+        bins_lib_package_cmd_args.push(vec![
+            "check".to_string(),
+            "--package".to_string(),
+            "port".to_string(),
+            "--lib".to_string(),
+            "--tests".to_string(),
+            "--benches".to_string(),
+        ]);
 
         let rustup_state = RustupState::new()?;
 
@@ -1033,15 +1030,16 @@ impl CheckStep {
         // for check.  Otherwise we'll always default to <arch>-unknown-linux-gnu.
         let mut benches_tests_package_cmd_args = Vec::new();
 
-        for arch in ["aarch64", "riscv64", "x86_64"] {
-            let Some(target) = rustup_state.std_supported_target(arch) else {
+        for arch in Arch::ALL {
+            let package = arch.package();
+            let Some(target) = rustup_state.std_supported_target(&package) else {
                 continue;
             };
 
             benches_tests_package_cmd_args.push(vec![
                 "check".to_string(),
                 "--package".to_string(),
-                arch.to_string(),
+                package,
                 "--tests".to_string(),
                 "--benches".to_string(),
                 "--target".to_string(),
@@ -1744,19 +1742,8 @@ fn target_dir() -> PathBuf {
 
 /// Exclude architectures other than the one being built
 fn exclude_other_arches(arch: Arch, cmd: &mut Command) {
-    match arch {
-        Arch::Aarch64 => {
-            cmd.arg("--exclude").arg("riscv64");
-            cmd.arg("--exclude").arg("x86_64");
-        }
-        Arch::Riscv64 => {
-            cmd.arg("--exclude").arg("aarch64");
-            cmd.arg("--exclude").arg("x86_64");
-        }
-        Arch::X86_64 => {
-            cmd.arg("--exclude").arg("aarch64");
-            cmd.arg("--exclude").arg("riscv64");
-        }
+    for other in Arch::ALL.iter().filter(|&&other| other != arch) {
+        cmd.arg("--exclude").arg(other.package());
     }
 }
 
