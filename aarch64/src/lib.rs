@@ -23,6 +23,7 @@ pub mod mailbox;
 pub mod pagealloc;
 pub mod param;
 pub mod pre_mmu;
+pub mod process;
 pub mod qemu;
 pub mod reg;
 pub mod registers;

@@ -95,13 +95,7 @@ unsafe extern "C" {
 /// - On the switch-back, x0–x18 hold whatever the process left in
 ///   them; only x19–x30, the stack, and the EL/DAIF state are
 ///   preserved, per the AArch64 procedure call standard.
-// Nothing calls this yet: the user_process test stops short of the
-// switch, because the syscall handler it would land in never returns.
-// process-run (the first-user-process arc) lands the first caller; the
-// expectation fails as a prompt to drop it, and to make this pub, which
-// that caller needs.
 #[cfg(target_os = "none")]
-#[expect(dead_code)]
 pub(crate) unsafe fn swtch(from: *mut *mut Context, to: *const Context, spsr: u64) {
     unsafe { swtch_asm(from, to, spsr) };
 }

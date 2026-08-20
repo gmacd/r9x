@@ -1,6 +1,6 @@
 use core::fmt;
 
-use crate::reg::esr_el1::EsrEl1;
+use crate::reg::esr_el1::{EsrEl1, ExceptionClass};
 use crate::{gic, timer};
 use port::iprintln;
 
@@ -230,12 +230,10 @@ fn trap(frame: &mut TrapFrame) {
         return;
     }
 
-    match frame.esr_el1.ec() {
-        0x15 => {
-            // Syscall
-            let syscallid = frame.esr_el1.iss();
-            iprintln!("Syscall {syscallid}");
-        }
+    match frame.esr_el1.exception_class_enum() {
+        // An AArch64 SVC: the ISS is the svc immediate, i.e. the
+        // syscall number (Arm ARM DDI 0487, ESR_EL1).
+        Ok(ExceptionClass::SvcAarch64) => syscall_exit(u64::from(frame.esr_el1.iss())),
         _ => {
             // Synchronous exception (data abort, instruction abort, etc.)
             iprintln!("{:#?}", frame);
@@ -248,9 +246,54 @@ fn trap(frame: &mut TrapFrame) {
     }
 }
 
+/// A process asking to be killed, by exit or by an unimplemented
+/// syscall: record the status and switch back to the kernel context
+/// that started it.
+///
+/// Every syscall the first kernel knows ends the process: exit is the
+/// real one, and an unimplemented number kills with that number as
+/// status rather than returning to a program that would just re-issue
+/// it (a livelock) or spinning (a hang).
+#[cfg(target_os = "none")]
+fn syscall_exit(syscall: u64) -> ! {
+    use crate::process;
+    use crate::swtch::{Context, SPSR_EL1H, swtch};
+
+    let kernel = unsafe { process::kernel_return() };
+    if kernel.is_null() {
+        // Unreachable: no process is running, so no EL0 svc can have
+        // been taken.  Spin loudly rather than guess.
+        iprintln!("exit trap with no process running");
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    unsafe { process::set_exit_status(syscall) };
+    iprintln!("process exited, status {syscall}");
+
+    // Returning to the starter is a context switch, not an exception
+    // return: hardware eret restores no general registers, so the
+    // starter's x19-x30 can only come back through swtch.  The trap
+    // context is discarded; the slot just holds it until the switch.
+    let mut slot: *mut Context = core::ptr::null_mut();
+    unsafe { swtch(&mut slot, kernel, SPSR_EL1H) };
+    unreachable!("swtch resumed the discarded trap context");
+}
+
+#[cfg(not(target_os = "none"))]
+fn syscall_exit(_syscall: u64) -> ! {
+    // Host (unit-test) builds have no switch; the decode above is
+    // what they exercise.  Complete like an unhandled trap.
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ExceptionType;
+    use crate::reg::esr_el1::{EsrEl1, ExceptionClass};
 
     #[test]
     fn exception_type_try_from_all_values() {
@@ -288,5 +331,19 @@ mod tests {
         let t = ExceptionType::try_from(10).unwrap();
         let debug_str = format!("{:?}", t);
         assert_eq!(debug_str, "FiqInvalidEL0_64");
+    }
+
+    #[test]
+    fn svc_aarch64_decode() {
+        // EC 0x15 is an AArch64 SVC and its ISS is the svc immediate,
+        // i.e. the syscall number (Arm ARM DDI 0487, ESR_EL1).
+        let esr = EsrEl1(0x15u64 << 26 | 3);
+        assert_eq!(esr.exception_class_enum(), Ok(ExceptionClass::SvcAarch64));
+        assert_eq!(esr.iss(), 3);
+
+        // A non-SVC synchronous exception must not decode as one.
+        let esr = EsrEl1(0x24u64 << 26 | 3);
+        assert_eq!(esr.exception_class_enum(), Ok(ExceptionClass::DataAbortLowerEl));
+        assert_eq!(esr.iss(), 3);
     }
 }

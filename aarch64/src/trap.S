@@ -49,6 +49,15 @@ interruptstackbase:	.space INTERRUPTSTACKSZ
 // - ELR_EL1 (Exception link register EL1)
 // - FAR_EL1 (Fault address register EL1)
 .macro handle_interrupt type
+	// Mask IRQs before anything else: one landing between vector entry
+	// and the stack switch would push its frame on whatever sp held
+	// (possibly the EL0 stack), and one landing inside a handler would
+	// push on the live trap frame.  eret restores the interrupted DAIF
+	// from the hardware SPSR_EL1, so the mask leaks nowhere.  DAIFSet
+	// imm4 encodes D,A,I,F as bits 3..0, so #2 is the I bit (Arm ARM
+	// DDI 0487).
+	msr	daifset, #2
+
 	// Switch to the interrupt stack
 	ldr	x0, =interruptstackbase
 	add	x0, x0, #INTERRUPTSTACKSZ
