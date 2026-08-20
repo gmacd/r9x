@@ -172,7 +172,6 @@ fn push_cfg(rustflags: &mut Vec<String>, cfg: &str) {
 }
 
 /// Render `name` or `name="value"` as the matching --check-cfg expression.
-/// No spaces: rustflags are passed as one string and split on whitespace.
 fn check_cfg(cfg: &str) -> String {
     match cfg.split_once('=') {
         Some((name, value)) => format!("cfg({name},values({value}))"),
@@ -254,10 +253,19 @@ fn apply_rustflags(cmd: &mut Command, rustflags: &[String]) {
     // pass the collected rustflags
     // !! this overrides the build.rustflags from the target Cargo.toml !!
     if !rustflags.is_empty() {
-        let flat = rustflags.join(" ");
+        // A TOML array, not a joined string: cargo whitespace-splits a
+        // string-valued build.rustflags, which would shear any flag
+        // carrying a path with a space (-Clink-args=-T<path>/kernel.ld).
+        let flags: Vec<String> = rustflags.iter().map(|f| toml_basic_string(f)).collect();
         cmd.arg("--config");
-        cmd.arg(format!("build.rustflags='{flat}'"));
+        cmd.arg(format!("build.rustflags=[{}]", flags.join(",")));
     }
+}
+
+/// Render `s` as a TOML basic string, escaping the two characters TOML
+/// gives meaning inside one.
+fn toml_basic_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 pub fn apply_to_clippy_step(cmd: &mut Command, config: &Configuration) {
