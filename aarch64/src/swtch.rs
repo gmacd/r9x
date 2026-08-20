@@ -55,12 +55,14 @@ impl fmt::Debug for Context {
 
 // The switch and its wrapper exist only where the assembly is built in;
 // host builds of the library (unit tests) never see them.
-/// The state a kernel context resumes in: EL1 with SP_EL1 (M = 0b0101,
-/// SP = 1), DAIF unmasked, IL = 0.  The CPSR state encoding per Arm ARM
-/// DDI 0487; callers masking interrupts at switch-out OR in the DAIF
-/// bits (0x3c0: D=1<<9, A=1<<8, I=1<<7, F=1<<6) so the switch-back
-/// restores their mask.
-pub const SPSR_EL1H: u64 = 0x7;
+/// The state a kernel context resumes in: EL1 with SP_EL1 (M = 0b00101,
+/// SP = 1), DAIF unmasked, IL = 0.  The AArch64 PSTATE.M encoding per
+/// Arm ARM DDI 0487: EL is M[3:2], SP is M[0], and M[1] is reserved,
+/// so EL1h is 0x5 (Linux's PSR_MODE_EL1h) -- 0x7 sets the reserved
+/// bit and is an illegal exception return.  Callers masking interrupts
+/// at switch-out OR in the DAIF bits (0x3c0: D=1<<9, A=1<<8, I=1<<7,
+/// F=1<<6) so the switch-back restores their mask.
+pub const SPSR_EL1H: u64 = 0x5;
 
 #[cfg(target_os = "none")]
 unsafe extern "C" {

@@ -272,6 +272,12 @@ fn syscall_exit(syscall: u64) -> ! {
     unsafe { process::set_exit_status(syscall) };
     iprintln!("process exited, status {syscall}");
 
+    // This path never returns to trap_unsafe, so the enter_interrupt it
+    // took is never exited: balance it now, or the resumed kernel would
+    // believe it is still in interrupt context and every println would
+    // panic.
+    port::irq::exit_interrupt();
+
     // Returning to the starter is a context switch, not an exception
     // return: hardware eret restores no general registers, so the
     // starter's x19-x30 can only come back through swtch.  The trap
