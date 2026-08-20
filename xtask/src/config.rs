@@ -186,18 +186,19 @@ fn apply_link(
     target: &str,
     profile: &Profile,
     workspace_path: &str,
-) {
+) -> crate::Result<()> {
     // we don't need to handle the linker script for clippy
     if let Some(link) = &config.link {
-        let filename = link["script"].clone();
+        let Some(filename) = link.get("script") else {
+            return Err("config [link] table has no 'script' key".into());
+        };
 
         // do we have a linker script ?
         if !filename.is_empty() {
             let mut contents = match fs::read_to_string(format!("{workspace_path}/{filename}")) {
                 Ok(c) => c,
-                Err(_) => {
-                    eprintln!("Could not read file `{filename}`");
-                    exit(1);
+                Err(e) => {
+                    return Err(format!("could not read linker script `{filename}`: {e}").into());
                 }
             };
 
@@ -221,20 +222,19 @@ fn apply_link(
                 .to_string();
 
             // make sure the target directory exists
-            if !std::path::Path::new(&path).exists() {
-                // if not, create it
-                let _ = create_dir_all(&path);
-            }
+            create_dir_all(&path).map_err(|e| format!("could not create `{path}`: {e}"))?;
 
             // everything is setup, now create the linker script
             // in the target directory
-            let mut file = File::create(format!("{path}/kernel.ld")).unwrap();
-            let _ = file.write_all(contents.as_bytes());
+            File::create(format!("{path}/kernel.ld"))
+                .and_then(|mut file| file.write_all(contents.as_bytes()))
+                .map_err(|e| format!("could not write `{path}/kernel.ld`: {e}"))?;
 
             // pass the script path to the rustflags
             rustflags.push(format!("-Clink-args=-T{path}/kernel.ld"));
         }
     }
+    Ok(())
 }
 
 fn apply_qemu_config(cmd: &mut Command, config: &Configuration) {
@@ -272,12 +272,13 @@ pub fn apply_to_build_step(
     target: &str,
     profile: &Profile,
     workspace_path: &str,
-) {
+) -> crate::Result<()> {
     let mut rustflags: Vec<String> = Vec::new();
     apply_build(cmd, &mut rustflags, config);
     apply_platform_config(cmd, &mut rustflags, config);
-    apply_link(&mut rustflags, config, target, profile, workspace_path);
+    apply_link(&mut rustflags, config, target, profile, workspace_path)?;
     apply_rustflags(cmd, &rustflags);
+    Ok(())
 }
 
 pub fn apply_to_qemu_step(cmd: &mut Command, config: &Configuration) {

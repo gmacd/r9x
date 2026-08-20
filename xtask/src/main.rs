@@ -97,22 +97,27 @@ struct RustupState {
 impl RustupState {
     /// Runs rustup command to get a list of all installed toolchains.
     /// Also caches the current toolchain.
-    fn new() -> Self {
-        Self {
-            installed_targets: Self::installed_rustup_targets().unwrap(),
-            curr_toolchain: env::var("RUSTUP_TOOLCHAIN").unwrap(),
-        }
+    fn new() -> Result<Self> {
+        let curr_toolchain = env::var("RUSTUP_TOOLCHAIN").map_err(|_| {
+            "RUSTUP_TOOLCHAIN is not set: check, clippy and test need a rustup-managed toolchain"
+        })?;
+        Ok(Self { installed_targets: Self::installed_rustup_targets()?, curr_toolchain })
     }
 
     /// Call `rustup target list --installed` to get all installed target triples
     fn installed_rustup_targets() -> Result<Vec<Triple>> {
-        let output =
-            Command::new("rustup").arg("target").arg("list").arg("--installed").output()?;
+        let output = Command::new("rustup")
+            .arg("target")
+            .arg("list")
+            .arg("--installed")
+            .output()
+            .map_err(|e| format!("rustup target list --installed: {e}"))?;
         if !output.status.success() {
-            return Err(String::from_utf8(output.stdout.clone())?.into());
+            // rustup reports its errors on stderr
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string().into());
         }
 
-        Ok(String::from_utf8(output.stdout.clone())?.lines().flat_map(Triple::from_str).collect())
+        Ok(String::from_utf8(output.stdout)?.lines().flat_map(Triple::from_str).collect())
     }
 
     /// For the given arch, return a compatible toolchain triple that is
@@ -380,7 +385,7 @@ impl BuildStep {
             &self.arch.target(),
             &self.profile,
             workspace().to_str().unwrap(),
-        );
+        )?;
 
         cmd.current_dir(workspace());
         cmd.arg("--workspace");
@@ -818,7 +823,7 @@ impl TestStep {
         // Tests need std, and the arch packages set a bare-metal
         // default-target that has no std, so spell the host out.
         let host = std::env::consts::ARCH;
-        let rustup_state = RustupState::new();
+        let rustup_state = RustupState::new()?;
         let Some(target) = rustup_state.std_supported_target(host) else {
             return Err(format!("no target with std is installed for {host}").into());
         };
@@ -904,7 +909,7 @@ impl ClippyStep {
         // The arch packages' tests need std, so they need an OS-specific
         // toolchain; where none is installed, skip them as check does.
         let package = self.arch.to_string().to_lowercase();
-        if let Some(target) = RustupState::new().std_supported_target(&package) {
+        if let Some(target) = RustupState::new()?.std_supported_target(&package) {
             let mut cmd = self.command();
             cmd.arg("--package").arg(&package).arg("--tests").arg("--benches");
             cmd.arg("--target").arg(target.to_string());
@@ -1000,7 +1005,7 @@ impl CheckStep {
             ],
         ];
 
-        let rustup_state = RustupState::new();
+        let rustup_state = RustupState::new()?;
 
         // However, running check for tests and benches in arch packages requires
         // that we use a toolchain with `std`, so we need an OS-specific toolchain.
@@ -1346,7 +1351,7 @@ impl ArchIntegrationTests {
             &self.arch.target(),
             &self.profile,
             workspace().to_str().unwrap(),
-        );
+        )?;
         cmd.current_dir(workspace());
         cmd.arg("--package").arg(self.package());
         cmd.arg("--test").arg(name);
