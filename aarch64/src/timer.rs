@@ -53,10 +53,20 @@ impl Timer {
         timer
     }
 
-    /// Register and arm the timer.  Panics if the timer table is full.
+    /// Register and arm the timer.  Panics if the timer table is full,
+    /// or if a periodic timer's period is shorter than one counter
+    /// tick.
     pub fn start(&'static self) {
         let ticks = duration_to_ticks(self.duration);
-        self.period_ticks.store(if self.repeat { ticks } else { 0 }, Ordering::Relaxed);
+        // The re-arm in interrupt_handler divides by the period, so a
+        // periodic timer must be at least one tick long.  (A zero-tick
+        // one-shot is fine: it just fires immediately.)
+        assert!(
+            !self.repeat || ticks > 0,
+            "timer: periodic duration {:?} is shorter than one counter tick",
+            self.duration
+        );
+        self.period_ticks.store(ticks, Ordering::Relaxed);
         self.deadline_ticks.store(now() + ticks, Ordering::Relaxed);
         self.active.store(true, Ordering::Release);
         let _irq = IrqGuard::new();
@@ -137,14 +147,12 @@ fn arm_hardware() {
     }
 }
 
-static TIMER_FREQ: AtomicU64 = AtomicU64::new(0);
-
 pub fn init() {
-    let freq = CntFrqEl0::read().freq();
-    if freq == 0 {
+    // duration_to_ticks re-checks this on every start; checking here
+    // too fails at boot rather than at the first timer.
+    if CntFrqEl0::read().freq() == 0 {
         panic!("timer: CNTFRQ_EL0=0: counter frequency not programmed by firmware");
     }
-    TIMER_FREQ.store(freq, Ordering::Relaxed);
 
     timer_disable();
 }
@@ -153,16 +161,14 @@ fn now() -> u64 {
     CntPctEl0::read().value()
 }
 
-/// Convert a duration to hardware ticks.  A zero tick count would arm
-/// a periodic timer with an unchanging, always-past deadline — an
-/// interrupt storm — so a timer started before `init` is a bug.
+/// Convert a duration to hardware ticks.  Reads CNTFRQ_EL0 directly —
+/// firmware programs it before we ever run, so unlike a cached copy
+/// there is no ordering dependency on `init`.
 fn duration_to_ticks(dur: Duration) -> u64 {
-    let freq = TIMER_FREQ.load(Ordering::Relaxed);
+    let freq = CntFrqEl0::read().freq();
+    assert!(freq != 0, "timer: CNTFRQ_EL0=0: counter frequency not programmed by firmware");
     ((dur.as_nanos() * freq as u128) / 1_000_000_000) as u64
 }
-
-#[cfg(test)]
-static SAMPLED_IN_TEST: bool = true;
 
 /// Hardware interrupt handler — called from the trap handler.
 ///
@@ -171,11 +177,6 @@ static SAMPLED_IN_TEST: bool = true;
 /// what deasserts the level-triggered timer interrupt: the new CVAL is
 /// in the future, or the timer is disabled.
 pub fn interrupt_handler() {
-    #[cfg(test)]
-    if !SAMPLED_IN_TEST {
-        return;
-    }
-
     // 1. Copy out the table so callbacks run outside the lock.
     let timers = with_timers(|timers| *timers);
 
@@ -189,8 +190,7 @@ pub fn interrupt_handler() {
         if deadline > now {
             continue;
         }
-        let period = timer.period_ticks.load(Ordering::Relaxed);
-        if period == 0 {
+        if !timer.repeat {
             // Deactivate before firing so the callback may restart it.
             timer.active.store(false, Ordering::Release);
             timer.callback.fire();
@@ -199,7 +199,10 @@ pub fn interrupt_handler() {
             // timer the cleared active flag still stops it.
             // If the callback ran longer than the period, advance the
             // deadline repeatedly until it is in the future to avoid
-            // an interrupt storm.
+            // an interrupt storm.  `start` guarantees a periodic
+            // timer's period is at least one tick, so the division is
+            // safe.
+            let period = timer.period_ticks.load(Ordering::Relaxed);
             let next = deadline + ((now - deadline) / period + 1) * period;
             timer.deadline_ticks.store(next, Ordering::Relaxed);
         } else {
@@ -214,53 +217,180 @@ pub fn interrupt_handler() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reg::cnt_el0::set_mock_count;
-    use core::sync::atomic::Ordering;
+    use crate::reg::cnt_el0::{set_mock_count, set_mock_freq};
+    use std::sync::{Mutex, MutexGuard};
 
-    struct MockCallback;
-    impl TimerCallback for MockCallback {
+    // The tests drive the real start/cancel/interrupt_handler paths
+    // (IrqGuard is a no-op on hosted builds), so they share the global
+    // timer table and the mocked counter and frequency and must not
+    // interleave.  `reset` serialises them; a should_panic test
+    // poisons the mutex, which the lock recovery shrugs off.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 1000Hz: one tick per millisecond, so Duration::from_millis(n)
+    /// converts to n ticks.
+    const FREQ_1MS_PER_TICK: u64 = 1000;
+
+    fn reset(freq: u64) -> MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_mock_freq(freq);
+        set_mock_count(0);
+        with_timers(|timers| *timers = [None; MAX_TIMERS]);
+        guard
+    }
+
+    /// Counts its fires; keeps a periodic timer running until the
+    /// `limit`th fire.
+    struct CountingCallback {
+        fires: AtomicU64,
+        limit: u64,
+    }
+
+    impl CountingCallback {
+        const fn new(limit: u64) -> Self {
+            Self { fires: AtomicU64::new(0), limit }
+        }
+
+        fn fires(&self) -> u64 {
+            self.fires.load(Ordering::Relaxed)
+        }
+    }
+
+    impl TimerCallback for CountingCallback {
         fn fire(&self) -> bool {
-            true
+            let n = self.fires.fetch_add(1, Ordering::Relaxed) + 1;
+            n < self.limit
         }
     }
 
     #[test]
-    fn test_periodic_timer_clamping() {
-        // Setup: 100Hz timer (10ms period)
-        TIMER_FREQ.store(100, Ordering::Relaxed);
-        let _period = Duration::from_millis(10);
-
-        static CALLBACK: MockCallback = MockCallback;
+    fn periodic_rearm_clamps_missed_deadlines() {
+        let _guard = reset(FREQ_1MS_PER_TICK);
+        static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
         static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
+        TIMER.start();
+        assert_eq!(TIMER.deadline_ticks.load(Ordering::Relaxed), 10);
 
-        // Start timer at t=0. Deadline should be 10 ticks.
-        set_mock_count(0);
-        TIMER.period_ticks.store(10, Ordering::Relaxed);
-        TIMER.deadline_ticks.store(10, Ordering::Relaxed);
-        TIMER.active.store(true, Ordering::Release);
-
-        // Manually register the timer in the table
-        with_timers(|timers| {
-            timers[0] = Some(&TIMER);
-        });
-
-        // Simulate time passing to t=15 (past deadline)
+        // t=15, past the deadline: fires and re-arms in the future.
+        // next = 10 + ((15-10)/10 + 1)*10 = 20.
         set_mock_count(15);
-
-        // Fire the interrupt handler
         interrupt_handler();
-
-        // The new deadline should be clamped to the future.
-        // current = 15, old_deadline = 10, period = 10.
-        // next = 10 + ((15-10)/10 + 1)*10 = 10 + (0+1)*10 = 20.
+        assert_eq!(CALLBACK.fires(), 1);
         assert_eq!(TIMER.deadline_ticks.load(Ordering::Relaxed), 20);
 
-        // Simulate a very slow callback (time jumps to t=35)
+        // A slow callback: time jumps a whole period past the
+        // deadline.  next = 20 + ((35-20)/10 + 1)*10 = 40, skipping
+        // the missed t=30 expiry rather than firing immediately again.
         set_mock_count(35);
         interrupt_handler();
-
-        // current = 35, old_deadline = 20, period = 10.
-        // next = 20 + ((35-20)/10 + 1)*10 = 20 + (1+1)*10 = 40.
+        assert_eq!(CALLBACK.fires(), 2);
         assert_eq!(TIMER.deadline_ticks.load(Ordering::Relaxed), 40);
+    }
+
+    #[test]
+    fn one_shot_fires_once_and_ignores_return_value() {
+        let _guard = reset(FREQ_1MS_PER_TICK);
+        // The callback returns true ("keep running"); a one-shot must
+        // deactivate anyway.
+        static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
+        static TIMER: Timer = Timer::new(Duration::from_millis(10), &CALLBACK);
+        TIMER.start();
+
+        set_mock_count(15);
+        interrupt_handler();
+        assert_eq!(CALLBACK.fires(), 1);
+        assert!(!TIMER.active.load(Ordering::Acquire));
+
+        set_mock_count(100);
+        interrupt_handler();
+        assert_eq!(CALLBACK.fires(), 1);
+    }
+
+    #[test]
+    fn periodic_stops_when_callback_returns_false() {
+        let _guard = reset(FREQ_1MS_PER_TICK);
+        static CALLBACK: CountingCallback = CountingCallback::new(2);
+        static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
+        TIMER.start();
+
+        set_mock_count(10);
+        interrupt_handler();
+        assert_eq!(CALLBACK.fires(), 1);
+        assert!(TIMER.active.load(Ordering::Acquire));
+
+        set_mock_count(20);
+        interrupt_handler();
+        assert_eq!(CALLBACK.fires(), 2);
+        assert!(!TIMER.active.load(Ordering::Acquire));
+
+        set_mock_count(30);
+        interrupt_handler();
+        assert_eq!(CALLBACK.fires(), 2);
+    }
+
+    #[test]
+    fn cancelled_timer_does_not_fire() {
+        let _guard = reset(FREQ_1MS_PER_TICK);
+        static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
+        static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
+        TIMER.start();
+        TIMER.cancel();
+
+        set_mock_count(50);
+        interrupt_handler();
+        assert_eq!(CALLBACK.fires(), 0);
+    }
+
+    /// The handler deactivates a one-shot before firing exactly so the
+    /// callback may restart it.  This pins that contract, and with it
+    /// that callbacks run outside the table lock: the restart's
+    /// re-registration would deadlock inside the handler otherwise.
+    #[test]
+    fn one_shot_callback_can_restart_its_timer() {
+        let _guard = reset(FREQ_1MS_PER_TICK);
+
+        struct RestartOnce {
+            fires: AtomicU64,
+        }
+        impl TimerCallback for RestartOnce {
+            fn fire(&self) -> bool {
+                if self.fires.fetch_add(1, Ordering::Relaxed) == 0 {
+                    TIMER.start();
+                }
+                false
+            }
+        }
+        static CALLBACK: RestartOnce = RestartOnce { fires: AtomicU64::new(0) };
+        static TIMER: Timer = Timer::new(Duration::from_millis(10), &CALLBACK);
+
+        TIMER.start();
+        set_mock_count(15);
+        interrupt_handler();
+        assert_eq!(CALLBACK.fires.load(Ordering::Relaxed), 1);
+        assert!(TIMER.active.load(Ordering::Acquire));
+        assert_eq!(TIMER.deadline_ticks.load(Ordering::Relaxed), 25);
+
+        set_mock_count(30);
+        interrupt_handler();
+        assert_eq!(CALLBACK.fires.load(Ordering::Relaxed), 2);
+        assert!(!TIMER.active.load(Ordering::Acquire));
+    }
+
+    #[test]
+    #[should_panic(expected = "CNTFRQ_EL0=0")]
+    fn start_with_unprogrammed_frequency_panics() {
+        let _guard = reset(0);
+        static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
+        static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
+        TIMER.start();
+    }
+
+    #[test]
+    #[should_panic(expected = "shorter than one counter tick")]
+    fn sub_tick_periodic_period_panics() {
+        let _guard = reset(FREQ_1MS_PER_TICK);
+        static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
+        static TIMER: Timer = Timer::periodic(Duration::from_micros(500), &CALLBACK);
+        TIMER.start();
     }
 }

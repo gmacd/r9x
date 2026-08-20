@@ -2,8 +2,8 @@ use core::fmt;
 
 use aarch64_cpu::asm::barrier;
 #[cfg(not(test))]
-use aarch64_cpu::registers::CNTPCT_EL0;
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_CTL_EL0, CNTP_CVAL_EL0, Readable, Writeable};
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTPCT_EL0};
+use aarch64_cpu::registers::{CNTP_CTL_EL0, CNTP_CVAL_EL0, Readable, Writeable};
 use bitstruct::bitstruct;
 
 // CNTPCT_EL0 — 64-bit physical counter
@@ -50,9 +50,25 @@ impl fmt::Debug for CntPctEl0 {
 #[derive(Copy, Clone, Default)]
 pub struct CntFrqEl0(u64);
 
+// Defaults to 0, i.e. "firmware never programmed the register", so a
+// test must opt in to a working frequency.
+#[cfg(test)]
+static MOCK_FREQ: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub fn set_mock_freq(freq: u64) {
+    MOCK_FREQ.store(freq, core::sync::atomic::Ordering::Relaxed);
+}
+
 impl CntFrqEl0 {
+    #[cfg(test)]
     pub fn read() -> Self {
-        Self(if cfg!(test) { 0 } else { CNTFRQ_EL0.extract().into() })
+        Self(MOCK_FREQ.load(core::sync::atomic::Ordering::Relaxed))
+    }
+
+    #[cfg(not(test))]
+    pub fn read() -> Self {
+        Self(CNTFRQ_EL0.extract().into())
     }
 
     pub fn freq(self) -> u64 {
