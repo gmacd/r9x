@@ -32,10 +32,10 @@ jobs:
         run: cargo xtask test
 
   aarch64-tests:
-    # Arch unit tests run natively only (TestStep): the aarch64 lib
-    # assembles inline asm the x86_64 host in checks cannot, so those
-    # 11 tests need an aarch64 host.  No QEMU is involved, hence no
-    # ubuntu-26.04 requirement.
+    # Arch unit tests execute, so TestStep runs an arch package only on
+    # its native host; checks cross-compiles the aarch64 tests via
+    # aarch64-unknown-linux-gnu but cannot run them.  No QEMU is
+    # involved, hence no ubuntu-26.04 requirement.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
