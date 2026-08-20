@@ -15,7 +15,11 @@ concurrency:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    # Pinned to an x86-64 label: cargo xtask test runs the host arch's
+    # unit tests, so this job carries the x86-64 half of that coverage
+    # (aarch64-tests the other) only while its runner stays x86-64 -- a
+    # floating ubuntu-latest could repoint it silently.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
