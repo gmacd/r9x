@@ -1,10 +1,16 @@
 // Context switch
 //
-//   pub unsafe fn swtch(from: *mut *const Context, to: *const Context)
+//   pub(crate) unsafe fn swtch(from: *mut *mut Context, to: *const Context,
+//                              spsr: u64)
 //
 // Save the current registers on the stack, creating a Context struct,
 // and save its address in `*from`.  Switch stacks to `to` and pop
 // previously-saved registers.
+//
+// x2 (`spsr`) is recorded as the saved context's spsr: AArch64 has no
+// instruction to read the current state (the mrs-rd-cpsr that the AArch32
+// original used does not exist here; Arm ARM DDI 0487), so the caller
+// supplies the EL/SP/DAIF state the saved context should resume in.
 
 .section .text
 
@@ -20,8 +26,10 @@ swtch:
 	stp x27, x28, [sp, #-16]!
 	stp x29, x30, [sp, #-16]!
 	mov x4, sp
-	mrs x5, spsr_el1
-	stp x4, x5, [sp, #-16]!
+	// x2, the caller's resume state, not spsr_el1: the latter holds the
+	// state of the last context trapped to EL1, not the kernel's own
+	// (Arm ARM DDI 0487, SPSR_EL1), and is uninitialised until then.
+	stp x4, x2, [sp, #-16]!
 
 	// (2) Switch stacks.  Once this section completes we will be in the
 	// context of the process referred to by the 'to' argument.
@@ -37,8 +45,8 @@ swtch:
 	ldp x25, x26, [sp], #16
 	ldp x27, x28, [sp], #16
 	ldp x29, x30, [sp], #16
-	ldp x4, x5, [sp], #16       // Discarding the sp - is that ok?
-	msr spsr_el1, x5
+	ldp x4, x5, [sp], #16       // x4 (the saved sp) is dead: sp is now x1
+	msr spsr_el1, x5            // x5 is the to-context's own spsr
 
 	msr elr_el1, x30
 

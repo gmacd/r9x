@@ -53,12 +53,55 @@ impl fmt::Debug for Context {
     }
 }
 
+// The switch and its wrapper exist only where the assembly is built in;
+// host builds of the library (unit tests) never see them.
+/// The state a kernel context resumes in: EL1 with SP_EL1 (M = 0b0101,
+/// SP = 1), DAIF unmasked, IL = 0.  The CPSR state encoding per Arm ARM
+/// DDI 0487; callers masking interrupts at switch-out OR in the DAIF
+/// bits (0x3c0: D=1<<9, A=1<<8, I=1<<7, F=1<<6) so the switch-back
+/// restores their mask.
+pub const SPSR_EL1H: u64 = 0x7;
+
+#[cfg(target_os = "none")]
 unsafe extern "C" {
-    // Nothing calls this yet: the user_process test stops short of the
-    // switch, because the syscall handler it would land in never returns.
-    // The expectation fails as soon as something does call it, as a prompt
-    // to drop the attribute -- and to make this pub, which a test image
-    // taking the switch would need.
-    #[expect(dead_code)]
-    pub(crate) fn swtch(from: *mut *mut Context, to: &Context);
+    #[link_name = "swtch"]
+    fn swtch_asm(from: *mut *mut Context, to: *const Context, spsr: u64);
+}
+
+/// Switch from the current context to the one described by `to`.
+///
+/// Saves x19–x30, the stack pointer, and `spsr` as a `Context` on the
+/// caller's stack, stores its address in `*from`, and enters the `to`
+/// context.  The call does not return until the saved context is
+/// switched back to with a later `swtch` call.
+///
+/// `spsr` is the EL/SP/DAIF state the saved context resumes in when it
+/// is switched back to; AArch64 cannot read the current state, so the
+/// caller supplies it.  A kernel caller passes [`SPSR_EL1H`], ORing in
+/// the DAIF bits (0x3c0) if it is masking interrupts at switch-out.
+///
+/// # Safety
+///
+/// - `from` must address a writable `*mut Context` slot that stays
+///   alive for the whole switch: the saved context lives on this
+///   caller's stack, so the caller's frame must not return before the
+///   switch-back.
+/// - `to` must address a valid `Context`: either one saved by an
+///   earlier `swtch`, or one a starter has fully initialised
+///   (callee-saved registers, `sp` to a live stack, `x30` to an entry
+///   point, `spsr` to the target EL state).
+/// - `spsr` must encode a valid resume state for this caller (for
+///   kernel callers, [`SPSR_EL1H`] with the caller's own DAIF mask).
+/// - On the switch-back, x0–x18 hold whatever the process left in
+///   them; only x19–x30, the stack, and the EL/DAIF state are
+///   preserved, per the AArch64 procedure call standard.
+// Nothing calls this yet: the user_process test stops short of the
+// switch, because the syscall handler it would land in never returns.
+// process-run (the first-user-process arc) lands the first caller; the
+// expectation fails as a prompt to drop it, and to make this pub, which
+// that caller needs.
+#[cfg(target_os = "none")]
+#[expect(dead_code)]
+pub(crate) unsafe fn swtch(from: *mut *mut Context, to: *const Context, spsr: u64) {
+    unsafe { swtch_asm(from, to, spsr) };
 }
