@@ -1,0 +1,18 @@
+name: Rust caches
+description: >
+  Cache the rustup toolchain and the cargo build tree.  The repository
+  must already be checked out: the toolchain cache key hashes
+  rust-toolchain.toml, and a local action cannot resolve before checkout.
+
+runs:
+  using: composite
+  steps:
+    - name: Cache the toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.rustup/toolchains
+          ~/.rustup/update-hashes
+          ~/.rustup/settings.toml
+        key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6

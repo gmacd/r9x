@@ -19,15 +19,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - name: Cache the toolchain
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.rustup/update-hashes
-            ~/.rustup/settings.toml
-          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: ./.github/actions/rust-cache
       - name: Run fmt
         run: cargo xtask fmt --check
       - name: Run check
@@ -44,15 +36,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - name: Cache the toolchain
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.rustup/update-hashes
-            ~/.rustup/settings.toml
-          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: ./.github/actions/rust-cache
       - name: Run tests
         run: cargo xtask test
 
@@ -67,15 +51,7 @@ jobs:
         arch: [aarch64, riscv64, x86-64]
     steps:
       - uses: actions/checkout@v6
-      - name: Cache the toolchain
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.rustup/update-hashes
-            ~/.rustup/settings.toml
-          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: ./.github/actions/rust-cache
       - name: Prepare apt package cache
         # The .debs from a fast run are reused by later ones, so a slow
         # apt mirror stops mattering once the cache is warm.  The tree is
