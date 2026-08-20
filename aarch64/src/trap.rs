@@ -259,7 +259,7 @@ fn syscall_exit(syscall: u64) -> ! {
     use crate::process;
     use crate::swtch::{Context, SPSR_EL1H, swtch};
 
-    let kernel = unsafe { process::kernel_return() };
+    let kernel = unsafe { process::kernel_slot() };
     if kernel.is_null() {
         // Unreachable: no process is running, so no EL0 svc can have
         // been taken.  Spin loudly rather than guess.
