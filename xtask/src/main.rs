@@ -703,7 +703,6 @@ impl QemuStep {
                     None => {
                         cmd.arg("-smp");
                         cmd.arg("8");
-                        cmd.arg("-s");
                         cmd.arg("-m");
                         cmd.arg("8192");
                         if self.wait_for_gdb {
