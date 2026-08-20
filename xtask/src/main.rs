@@ -740,14 +740,18 @@ impl TestStep {
             return Err(format!("no target with std is installed for {host}").into());
         };
 
-        // port and aarch64 build for any host, so their tests run
-        // everywhere.  riscv64 and x86_64 build only for their own
-        // architecture -- their inline asm, and riscv64's sbi-rt dependency,
-        // do not assemble elsewhere -- so run them only natively.  Neither
-        // has any tests today.
-        let mut packages = vec!["port", "aarch64"];
-        if ["riscv64", "x86_64"].contains(&host) {
-            packages.push(host);
+        // Tests execute, so an arch package only runs natively: its inline
+        // asm assembles only for its own architecture (aarch64's irq
+        // masking is a case in point).  Coverage on a foreign host is
+        // check's and clippy's job -- they build the arch for its
+        // <arch>-unknown-linux-gnu target instead, which is why
+        // rust-toolchain.toml names one for aarch64.  riscv64 and x86_64
+        // have no tests today; the selection still runs whatever is added.
+        let mut packages: Vec<&str> = vec!["port"];
+        for arch in ["aarch64", "riscv64", "x86_64"] {
+            if arch == host {
+                packages.push(arch);
+            }
         }
 
         for package in packages {
