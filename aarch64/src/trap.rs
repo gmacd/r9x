@@ -120,6 +120,9 @@ pub struct TrapFrame {
     elr_el1: u64,
     far_el1: u64,
     interrupt_type: u64,
+    /// The interrupted context's stack pointer: sp before the frame
+    /// push for an EL1 exception, SP_EL0 for an EL0 one.
+    sp: u64,
 }
 
 impl fmt::Debug for TrapFrame {
@@ -160,6 +163,7 @@ impl fmt::Debug for TrapFrame {
             .field("elr_el1", &format_args!("{:#018?}", self.elr_el1))
             .field("far_el1", &format_args!("{:#018?}", self.far_el1))
             .field("interrupt_type", &self.interrupt_type_name())
+            .field("sp", &format_args!("{:#018x}", self.sp))
             .finish()
     }
 }

@@ -48,24 +48,13 @@ interruptstackbase:	.space INTERRUPTSTACKSZ
 // - ESR_EL1 (Exception syndrome register EL1)
 // - ELR_EL1 (Exception link register EL1)
 // - FAR_EL1 (Fault address register EL1)
-.macro handle_interrupt type
-	// Mask IRQs before anything else: one landing between vector entry
-	// and the stack switch would push its frame on whatever sp held
-	// (possibly the EL0 stack), and one landing inside a handler would
-	// push on the live trap frame.  eret restores the interrupted DAIF
-	// from the hardware SPSR_EL1, so the mask leaks nowhere.  DAIFSet
-	// imm4 encodes D,A,I,F as bits 3..0, so #2 is the I bit (Arm ARM
-	// DDI 0487).
-	msr	daifset, #2
+// and finally the interrupt type and the interrupted stack pointer.
 
-	// Switch to the interrupt stack
-	ldr	x0, =interruptstackbase
-	add	x0, x0, #INTERRUPTSTACKSZ
-	mov	sp, x0
-
-	sub 	sp, sp, #288
-
-	// Caller-saved registers, FP
+// Store x0-x30 and the system registers into a 288-byte frame already
+// made at sp.  The frame's last slot — the interrupted stack pointer,
+// offset 280 — is the caller's to fill: where it comes from depends on
+// which EL the exception came from.
+.macro	save_frame type
 	stp 	x0, x1, [sp, #16 * 0]
 	stp 	x2, x3, [sp, #16 * 1]
 	stp	x4, x5, [sp, #16 * 2]
@@ -94,12 +83,10 @@ interruptstackbase:	.space INTERRUPTSTACKSZ
 	// Interrupt type
 	ldr	x3, =\type
 	str	x3, [sp, #16 * 17]
+.endm
 
-	// Pass pointer to TrapFrame (on stack) as the first arg
-	mov	x0, sp
-	bl	trap_unsafe
-
-	// Restore caller-saved registers
+// Restore x0-x30 from the frame at sp.
+.macro	restore_frame
 	ldp	x0, x1, [sp, #16 * 0]
 	ldp	x2, x3, [sp, #16 * 1]
 	ldp	x4, x5, [sp, #16 * 2]
@@ -116,9 +103,70 @@ interruptstackbase:	.space INTERRUPTSTACKSZ
 	ldp	x26, x27, [sp, #16 * 13]
 	ldp	x28, x29, [sp, #16 * 14]
 	ldr	x30, [sp, #16 * 15]
+.endm
 
-	// Remaining stack frame consists of systems registers we can just ignore
+// An exception taken from EL1: the kernel was interrupted mid-run, so
+// the frame goes on the stack it was running on and popping it puts sp
+// back exactly where it was.  eret restores no stack pointer, so a
+// switch to a dedicated stack here would resume the interrupted code
+// on the wrong stack — and a nested exception would reset to that
+// stack's top and overwrite the live outer frame.
+.macro	handle_interrupt_el1 type
+	// Mask IRQs before anything else: one landing inside a handler
+	// would push its frame on top of the live one being built.  eret
+	// restores the interrupted DAIF from the hardware SPSR_EL1, so the
+	// mask leaks nowhere.  DAIFSet imm4 encodes D,A,I,F as bits 3..0,
+	// so #2 is the I bit (Arm ARM DDI 0487).
+	msr	daifset, #2
+
+	sub 	sp, sp, #288
+	save_frame \type
+
+	// The interrupted sp is where the frame push started.
+	add	x0, sp, #288
+	str	x0, [sp, #16 * 17 + 8]
+
+	// Pass pointer to TrapFrame (on stack) as the first arg
+	mov	x0, sp
+	bl	trap_unsafe
+
+	restore_frame
 	add	sp, sp, #288
+
+	eret
+.endm
+
+// An exception taken from EL0: SP_EL1 is not a live kernel stack here —
+// swtch left it pointing into the process's entry context — so switch
+// to the dedicated interrupt stack.  Nothing valid lives on it between
+// exceptions (single core, one process), so starting from its top each
+// time is sound, and sp needs no restore: the eret returns to EL0 on
+// SP_EL0, and the next EL0 entry resets SP_EL1 again.
+.macro	handle_interrupt_el0 type
+	// Mask IRQs before anything else: one landing between vector entry
+	// and the stack switch would push its frame on whatever sp held.
+	// eret restores the interrupted DAIF from the hardware SPSR_EL1,
+	// so the mask leaks nowhere.
+	msr	daifset, #2
+
+	// Park x0 in TPIDR_EL1 (otherwise unused; single core) so the
+	// stack switch does not clobber the value the frame must save.
+	msr	tpidr_el1, x0
+	ldr	x0, =interruptstackbase + INTERRUPTSTACKSZ - 288
+	mov	sp, x0
+	mrs	x0, tpidr_el1
+
+	save_frame \type
+
+	// The interrupted sp is the process's, on SP_EL0.
+	mrs	x0, sp_el0
+	str	x0, [sp, #16 * 17 + 8]
+
+	// Pass pointer to TrapFrame (on stack) as the first arg
+	mov	x0, sp
+	bl	trap_unsafe
+
+	restore_frame
 
 	eret
 .endm
@@ -154,49 +202,49 @@ exception_vectors:
 	ventry	error_invalid_el0_32			// Error 32-bit EL0
 
 sync_invalid_el1t:
-	handle_interrupt  SYNC_INVALID_EL1t
+	handle_interrupt_el1  SYNC_INVALID_EL1t
 
 irq_invalid_el1t:
-	handle_interrupt  IRQ_INVALID_EL1t
+	handle_interrupt_el1  IRQ_INVALID_EL1t
 
 fiq_invalid_el1t:
-	handle_interrupt  FIQ_INVALID_EL1t
+	handle_interrupt_el1  FIQ_INVALID_EL1t
 
 error_invalid_el1t:
-	handle_interrupt  ERROR_INVALID_EL1t
+	handle_interrupt_el1  ERROR_INVALID_EL1t
 
 sync_invalid_el1h:
-	handle_interrupt  SYNC_INVALID_EL1h
+	handle_interrupt_el1  SYNC_INVALID_EL1h
 
 irq_invalid_el1h:
-	handle_interrupt  IRQ_INVALID_EL1h
+	handle_interrupt_el1  IRQ_INVALID_EL1h
 
 fiq_invalid_el1h:
-	handle_interrupt  FIQ_INVALID_EL1h
+	handle_interrupt_el1  FIQ_INVALID_EL1h
 
 error_invalid_el1h:
-	handle_interrupt  ERROR_INVALID_EL1h
+	handle_interrupt_el1  ERROR_INVALID_EL1h
 
 sync_invalid_el0_64:
-	handle_interrupt  SYNC_INVALID_EL0_64
+	handle_interrupt_el0  SYNC_INVALID_EL0_64
 
 irq_invalid_el0_64:
-	handle_interrupt  IRQ_INVALID_EL0_64
+	handle_interrupt_el0  IRQ_INVALID_EL0_64
 
 fiq_invalid_el0_64:
-	handle_interrupt  FIQ_INVALID_EL0_64
+	handle_interrupt_el0  FIQ_INVALID_EL0_64
 
 error_invalid_el0_64:
-	handle_interrupt  ERROR_INVALID_EL0_64
+	handle_interrupt_el0  ERROR_INVALID_EL0_64
 
 sync_invalid_el0_32:
-	handle_interrupt  SYNC_INVALID_EL0_32
+	handle_interrupt_el0  SYNC_INVALID_EL0_32
 
 irq_invalid_el0_32:
-	handle_interrupt  IRQ_INVALID_EL0_32
+	handle_interrupt_el0  IRQ_INVALID_EL0_32
 
 fiq_invalid_el0_32:
-	handle_interrupt  FIQ_INVALID_EL0_32
+	handle_interrupt_el0  FIQ_INVALID_EL0_32
 
 error_invalid_el0_32:
-	handle_interrupt  ERROR_INVALID_EL0_32
+	handle_interrupt_el0  ERROR_INVALID_EL0_32
