@@ -862,10 +862,21 @@ impl TestStep {
         // rust-toolchain.toml names one for aarch64.  riscv64 and x86_64
         // have no tests today; the selection still runs whatever is added.
         let mut packages: Vec<String> = vec!["port".to_string()];
+        let mut skipped = Vec::new();
         for arch in Arch::ALL {
             if arch.package() == host {
                 packages.push(arch.package());
+            } else {
+                skipped.push(arch.package());
             }
+        }
+        // Loud skip: a quiet pass here reads as the whole test gate when
+        // it is only the host's share of it.
+        if !skipped.is_empty() {
+            println!(
+                "xtask: skipping {}: an arch package's tests run only on its native host",
+                skipped.join(", ")
+            );
         }
 
         for package in packages {
@@ -934,12 +945,16 @@ impl ClippyStep {
 
         // The arch packages' tests need std, so they need an OS-specific
         // toolchain; where none is installed, skip them as check does.
-        let package = self.arch.to_string().to_lowercase();
+        let package = self.arch.package();
         if let Some(target) = RustupState::new()?.std_supported_target(&package) {
             let mut cmd = self.command();
             cmd.arg("--package").arg(&package).arg("--tests").arg("--benches");
             cmd.arg("--target").arg(target.to_string());
             self.lint(cmd)?;
+        } else {
+            println!(
+                "xtask: skipping {package} tests and benches: no installed target has std for it"
+            );
         }
 
         // The QEMU integration test images are bare metal kernels behind a
@@ -1033,6 +1048,13 @@ impl CheckStep {
         for arch in Arch::ALL {
             let package = arch.package();
             let Some(target) = rustup_state.std_supported_target(&package) else {
+                // Loud skip: this is the only compile signal the arch's
+                // test code gets on a foreign host, so dropping it
+                // silently would let a broken test stay green everywhere.
+                println!(
+                    "xtask: skipping {package} tests and benches: no installed target has std \
+                     for it"
+                );
                 continue;
             };
 
@@ -1675,7 +1697,7 @@ impl CiStep {
             ClippyStep::for_arch(arch, &self.config_name, self.profile, self.verbose).run()?;
         }
 
-        heading("test");
+        heading(&format!("test (host {})", std::env::consts::ARCH));
         TestStep { json_output: false, verbose: self.verbose }.run()?;
 
         // Everything above stops at metadata or at a test binary, so none
