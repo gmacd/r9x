@@ -94,7 +94,7 @@ const USER_STACK_VA: usize = 0x10000;
 
 /// dtb_va is the virtual address of the DTB structure.  The physical address is
 /// assumed to be dtb_va-KZERO.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(test), unsafe(no_mangle))]
 pub extern "C" fn main9(dtb_va: usize) {
     boot::irq_ops();
 

@@ -9,7 +9,7 @@ use port::println;
 use riscv64::platform::{devcons, platform_init};
 use riscv64::sbi;
 
-#[unsafe(no_mangle)]
+#[cfg_attr(not(test), unsafe(no_mangle))]
 pub extern "C" fn main9(hartid: usize, dtb_ptr: usize) -> ! {
     let dt = unsafe { DeviceTree::from_usize(dtb_ptr).unwrap() };
     devcons::init(&dt);
