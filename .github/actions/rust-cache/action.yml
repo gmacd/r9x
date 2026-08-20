@@ -16,3 +16,8 @@ runs:
           ~/.rustup/settings.toml
         key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      with:
+        # Save on red runs too: iteration on a failing job is exactly
+        # when pushes are frequent, and every one of them pays the full
+        # cold-build cost if only green runs may seed the cache.
+        cache-on-failure: true
