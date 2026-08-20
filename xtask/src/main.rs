@@ -1460,26 +1460,34 @@ impl ArchIntegrationTests {
         }
 
         let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", self.arch.qemu_system()))?;
+        // One drain thread per stream: reading them in sequence would let
+        // the undrained pipe fill and block QEMU mid-write, turning a
+        // passing test into a timeout.
+        let mut drains = Vec::new();
         if self.verbose {
             let stdout = child.stdout.take().expect("stdout was piped");
             let stderr = child.stderr.take().expect("stderr was piped");
-            std::thread::spawn(move || {
-                Self::filter_and_print(stdout);
-                Self::filter_and_print(stderr);
-            });
+            drains.push(std::thread::spawn(move || Self::filter_and_print(stdout)));
+            drains.push(std::thread::spawn(move || Self::filter_and_print(stderr)));
         }
         let deadline = std::time::Instant::now() + self.timeout;
-        loop {
+        let code = loop {
             if let Some(status) = child.try_wait()? {
-                return Ok(Some(status.code().unwrap_or(-1)));
+                break Some(status.code().unwrap_or(-1));
             }
             if std::time::Instant::now() >= deadline {
                 child.kill()?;
                 child.wait()?;
-                return Ok(None);
+                break None;
             }
             std::thread::sleep(Duration::from_millis(50));
+        };
+        // The child has exited, so the streams are at EOF; join so the
+        // tail of its output lands before the result is reported.
+        for drain in drains {
+            let _ = drain.join();
         }
+        Ok(code)
     }
 
     /// Reads a stream and prints it to stdout, but filters out
