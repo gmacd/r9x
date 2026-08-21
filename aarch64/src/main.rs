@@ -112,10 +112,10 @@ pub extern "C" fn main9(dtb_va: usize) {
     //   2. gic::init enables the distributor and this core's CPU
     //      interface.  boot::irq_ops (above, before the MMU work) must
     //      already have registered the DAIF ops IrqGuard needs.
-    //   3. IRQs are unmasked only if the GIC came up.  With no driver
-    //      published, an interrupt asserted by a prior boot stage would
-    //      be taken, find nothing to acknowledge it, and — being
-    //      level-triggered — re-fire forever.
+    //   3. IRQs are unmasked last.  Both inits panic on failure, so an
+    //      unmask here means a driver is published: an interrupt
+    //      asserted by a prior boot stage is taken and acknowledged,
+    //      not left level-asserted re-firing forever.
     boot::interrupts(&dt);
 
     println!();

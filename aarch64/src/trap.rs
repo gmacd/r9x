@@ -221,13 +221,13 @@ fn trap(frame: &mut TrapFrame) {
         // AArch64 GIC: IAR = 1023 means no pending interrupt (spurious).
         // This is valid on an IRQ vector and should be a no-op.
         if let Some(iar) = iar {
-            match iar.int_id() {
-                gic::TIMER_INTID => timer::interrupt_handler(),
-                intid => {
-                    iprintln!("Unhandled GIC IRQ {intid}");
-                    // Disable to avoid repeated unhandled interrupts
-                    gic::disable_interrupt(intid);
-                }
+            let intid = iar.int_id();
+            if intid == gic::timer_intid() {
+                timer::interrupt_handler();
+            } else {
+                iprintln!("Unhandled GIC IRQ {intid}");
+                // Disable to avoid repeated unhandled interrupts
+                gic::disable_interrupt(intid);
             }
             gic::end_interrupt(iar);
         }

@@ -57,9 +57,11 @@ pub fn irq_ops() {
 
 /// Timer, then GIC, then unmask — the order is load bearing, and is
 /// explained at the call site in the kernel binary.  Requires [`irq_ops`].
+/// Both inits panic on failure (see their modules' failure policy), so
+/// reaching the unmask means a driver is there to acknowledge whatever
+/// arrives.
 pub fn interrupts(dt: &DeviceTree) {
     timer::init();
-    if gic::init(dt).is_ok() {
-        irq::unmask_irqs();
-    }
+    gic::init(dt);
+    irq::unmask_irqs();
 }
