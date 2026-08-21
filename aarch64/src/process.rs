@@ -1,9 +1,10 @@
 //! State for the first user process (plans/first-user-process.md).
 //!
-//! One process, one caller, so the whole state is two words: a slot
+//! One process, one caller, so most of the state is two words: a slot
 //! `swtch` fills with the address of the kernel context it saved when
 //! the process started (the switch-back target), and the status the
-//! process exited with.
+//! process exited with.  (The process table that replaces this
+//! arrives with the scheduler.)
 
 // Only the accessors and run below use these; on host builds (unit
 // tests) they are cfg'd away with the rest of the machinery.
@@ -20,6 +21,10 @@ use crate::vm::{self, Entry, RootPageTableType, VaMapping};
 /// `svc #0`: the process asks to be killed.  The syscall number is the
 /// svc immediate, held in ESR_EL1.ISS for EC 0x15 (Arm ARM DDI 0487).
 pub const SYSEXIT: u64 = 0;
+
+/// `svc #1`: yield — do nothing; the handler's return is the whole
+/// syscall.
+pub const SYSYIELD: u64 = 1;
 
 // Single-core by the l.S gate (non-zero MPIDR affinity hangs at
 // boot), so the statics need no synchronisation.  KERNEL_SLOT is

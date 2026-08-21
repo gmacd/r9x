@@ -34,6 +34,11 @@ harness = false
 required-features = ["qemu-test"]
 
 [[test]]
+name = "user_yield"
+harness = false
+required-features = ["qemu-test"]
+
+[[test]]
 name = "timers"
 harness = false
 required-features = ["qemu-test"]

@@ -166,6 +166,14 @@ interruptstackbase:	.space INTERRUPTSTACKSZ
 	mov	x0, sp
 	bl	trap_unsafe
 
+	// Restore the process's user stack pointer before the eret:
+	// AArch64 eret copies no stack pointer (Arm ARM DDI 0487,
+	// AArch64.ExceptionReturn), so without this the process resumes
+	// with whatever SP_EL0 held — boot garbage, i.e. 0.  x0-x18 are
+	// dead until restore_frame, so x6 is a safe scratch here.
+	ldr	x6, [sp, #16 * 17 + 8]
+	msr	sp_el0, x6
+
 	restore_frame
 
 	eret

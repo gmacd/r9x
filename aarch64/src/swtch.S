@@ -52,10 +52,17 @@ swtch:
 	ldp x25, x26, [sp], #16
 	ldp x27, x28, [sp], #16
 	ldp x29, x30, [sp], #16
-	ldp x4, x5, [sp], #16       // x4 (the saved sp) is dead: sp is now x1
+	ldp x4, x5, [sp], #16
 	msr spsr_el1, x5            // x5 is the to-context's own spsr
 
 	msr elr_el1, x30
+
+	// The eret copies no stack pointer (Arm ARM DDI 0487,
+	// AArch64.ExceptionReturn), so the to-context's recorded sp goes
+	// to SP_EL0: an EL0 return lands on the process's user stack, and
+	// for an EL1 target the value is inert (SP_EL0 is banked) until
+	// the next EL0 entry re-establishes it.
+	msr sp_el0, x4
 
 	// Return to location in elr_el1
 	eret

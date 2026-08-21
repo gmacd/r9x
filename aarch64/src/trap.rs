@@ -1,7 +1,7 @@
 use core::fmt;
 
 use crate::reg::esr_el1::{EsrEl1, ExceptionClass};
-use crate::{gic, timer};
+use crate::{gic, process, timer};
 use port::iprintln;
 
 #[cfg(target_os = "none")]
@@ -237,7 +237,18 @@ fn trap(frame: &mut TrapFrame) {
     match frame.esr_el1.exception_class_enum() {
         // An AArch64 SVC: the ISS is the svc immediate, i.e. the
         // syscall number (Arm ARM DDI 0487, ESR_EL1).
-        Ok(ExceptionClass::SvcAarch64) => syscall_exit(u64::from(frame.esr_el1.iss())),
+        Ok(ExceptionClass::SvcAarch64) => {
+            let syscall = u64::from(frame.esr_el1.iss());
+            if svc_returns(syscall) {
+                // Yield: the return is the whole handler; the vector's
+                // restore + eret puts the process back at the
+                // instruction after the svc.
+                return;
+            }
+            // Exit and an unimplemented number both end the process,
+            // with the svc number as status.
+            syscall_exit(syscall);
+        }
         _ => {
             // Synchronous exception (data abort, instruction abort, etc.)
             iprintln!("{:#?}", frame);
@@ -250,14 +261,20 @@ fn trap(frame: &mut TrapFrame) {
     }
 }
 
+/// True iff the svc returns to the process rather than ending it:
+/// of the first kernel's syscalls, only yield does.
+fn svc_returns(syscall: u64) -> bool {
+    syscall == process::SYSYIELD
+}
+
 /// A process asking to be killed, by exit or by an unimplemented
 /// syscall: record the status and switch back to the kernel context
 /// that started it.
 ///
-/// Every syscall the first kernel knows ends the process: exit is the
-/// real one, and an unimplemented number kills with that number as
-/// status rather than returning to a program that would just re-issue
-/// it (a livelock) or spinning (a hang).
+/// Exit is the real one, and an unimplemented number kills with that
+/// number as status rather than returning to a program that would just
+/// re-issue it (a livelock) or spinning (a hang).  (Yield is the one
+/// svc that returns to the process — see `svc_returns`.)
 #[cfg(target_os = "none")]
 fn syscall_exit(syscall: u64) -> ! {
     use crate::process;
@@ -303,6 +320,8 @@ fn syscall_exit(_syscall: u64) -> ! {
 #[cfg(test)]
 mod tests {
     use super::ExceptionType;
+    use super::svc_returns;
+    use crate::process;
     use crate::reg::esr_el1::{EsrEl1, ExceptionClass};
 
     #[test]
@@ -355,5 +374,16 @@ mod tests {
         let esr = EsrEl1(0x24u64 << 26 | 3);
         assert_eq!(esr.exception_class_enum(), Ok(ExceptionClass::DataAbortLowerEl));
         assert_eq!(esr.iss(), 3);
+    }
+
+    #[test]
+    fn svc_dispatch_classification() {
+        // Only yield returns to the process; exit and every
+        // unimplemented number end it.
+        assert!(svc_returns(process::SYSYIELD), "yield must return");
+        assert!(!svc_returns(process::SYSEXIT), "exit must not return");
+        for n in [2u64, 3, 5, 100, u64::MAX] {
+            assert!(!svc_returns(n), "unimplemented {n} must not return");
+        }
     }
 }
