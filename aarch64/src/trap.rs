@@ -237,6 +237,11 @@ fn trap(frame: &mut TrapFrame) {
             }
             gic::end_interrupt(iar);
         }
+        // The trap tail: the tick callback only set a flag; the switch
+        // happens here, where CVAL has been re-armed (deasserting the
+        // level line) and the EOI is done.  No-op unless a tick fired
+        // in this handler (the flag is consumed by its own tail).
+        process::irq_resched();
         return;
     }
 

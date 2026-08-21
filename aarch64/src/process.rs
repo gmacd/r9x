@@ -31,12 +31,16 @@
 //! not papered over.
 
 #[cfg(target_os = "none")]
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+#[cfg(target_os = "none")]
+use core::time::Duration;
 
 #[cfg(target_os = "none")]
 use crate::pagealloc;
 #[cfg(target_os = "none")]
 use crate::swtch::{Context, SPSR_EL1H, swtch};
+#[cfg(target_os = "none")]
+use crate::timer::{Timer, TimerCallback};
 #[cfg(target_os = "none")]
 use crate::vm::{self, Entry, RootPageTableType, VaMapping};
 #[cfg(target_os = "none")]
@@ -46,13 +50,16 @@ use port::mcslock::{Lock, LockNode};
 #[cfg(target_os = "none")]
 use port::{iprintln, mem};
 
-/// x0 value for exit: the process asks to be killed.  The syscall
-/// number is x0 at the trap (the Linux convention; the svc immediate
-/// in ESR_EL1.ISS is not used), so a terminate-with-status is `mov
-/// x0, #n; svc #0`.
+/// x8 value for exit: the process asks to be killed.  The syscall
+/// number is x8 at the trap — this kernel's own convention (Linux
+/// arm64 also uses x8, with x0-x5 as arguments; the svc immediate in
+/// ESR_EL1.ISS is not used) — so a terminate-with-status is `mov
+/// x8, #n; svc #0`.  x8 doubles as the exit status, so status 1 is
+/// not expressible (1 is yield) and every new syscall number retires
+/// one exit status; revisit when a second real syscall lands.
 pub const SYSEXIT: u64 = 0;
 
-/// x0 value for yield: return to the process; if another process is
+/// x8 value for yield: return to the process; if another process is
 /// Runnable, the handler's `resched` switches to it first.
 pub const SYSYIELD: u64 = 1;
 
@@ -165,6 +172,84 @@ static mut STARTER_CTX: *mut Context = core::ptr::null_mut();
 #[cfg(target_os = "none")]
 fn starter_ctx_addr() -> *mut *mut Context {
     core::ptr::addr_of_mut!(STARTER_CTX)
+}
+
+/// The preemption tick: every 100 ms the timer fires, `Tick` sets the
+/// flag, and the trap tail (`irq_resched`) does the actual switch.
+#[cfg(target_os = "none")]
+const TICK_PERIOD: Duration = Duration::from_millis(100);
+
+/// Set by the tick callback, consumed by `irq_resched` at the tail of
+/// the IRQ path (swap-false, so a flag raised by one tick is consumed
+/// exactly once, by that tick's own tail).
+#[cfg(target_os = "none")]
+static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
+
+/// Preemptions actually performed: tick-driven `resched` calls that
+/// switched.  The image's `preemptions() >= 2` asserts on this; it is
+/// incremented only on a switch (not on a tick with nothing else
+/// runnable) because that is what distinguishes a healthy tick stream
+/// from the stranded-EOI regression, which allows exactly one tick
+/// switch and then self-heals through an exit.
+#[cfg(target_os = "none")]
+static PREEMPTIONS: AtomicU64 = AtomicU64::new(0);
+
+/// The tick never restarts once started (the timer is "not designed
+/// for concurrent restarts" per its docs); run_all may in principle
+/// run more than once, so the start is guarded by a one-time flag.
+#[cfg(target_os = "none")]
+static TICK_STARTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "none")]
+struct Tick;
+
+#[cfg(target_os = "none")]
+impl TimerCallback for Tick {
+    fn fire(&self) -> bool {
+        // Set the flag; the switch happens at the trap tail, never
+        // here.  IAR made the intid active and its active priority
+        // masks delivery of every interrupt at or below it until the
+        // matching EOI; the timer line is level-triggered and stays
+        // asserted until CVAL is re-armed.  A context suspended before
+        // both (a switch from inside this callback) holds the
+        // deassert and the EOI: no further tick is delivered while it
+        // is suspended, so round robin degenerates to exactly one
+        // preemption per boot.  This is the Plan 9 / Linux shape —
+        // the tick sets a flag, the trap tail schedules.
+        NEED_RESCHED.store(true, Ordering::Relaxed);
+        true
+    }
+}
+
+#[cfg(target_os = "none")]
+static TICK: Tick = Tick;
+
+#[cfg(target_os = "none")]
+static TICK_TIMER: Timer = Timer::periodic(TICK_PERIOD, &TICK);
+
+/// The tail of the IRQ path: after CVAL is re-armed (deasserting the
+/// level line) and the EOI is done, consume the tick's flag and, if a
+/// process is current, reschedule — counting a switch as a
+/// preemption.  With TPIDR null (a timer taken while the kernel
+/// runs) the flag is simply consumed: there is nothing to preempt.
+#[cfg(target_os = "none")]
+pub(crate) fn irq_resched() {
+    if !NEED_RESCHED.swap(false, Ordering::Acquire) {
+        return;
+    }
+    let cur = unsafe { tpidr_current() };
+    if cur.is_null() {
+        return;
+    }
+    if resched() {
+        PREEMPTIONS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Preemptions performed so far (see `PREEMPTIONS`).
+#[cfg(target_os = "none")]
+pub fn preemptions() -> u64 {
+    PREEMPTIONS.load(Ordering::Relaxed)
 }
 
 /// PSTATE bits masked in every `swtch` spsr this module passes for a
@@ -308,8 +393,15 @@ fn forkret_context(id: usize, text_va: usize, stack_va: usize) -> *mut Context {
         // nothing may live there after the first trap, because the
         // handler's own frames grow down from the frame and would
         // clobber it.  It is consumed by the first entry and dead
-        // after; a kstack that is switched to again holds only live
-        // frames above the water line the canary guards.
+        // after: the first trap's handler frames clobber this memory,
+        // but the process's `context` pointer is re-pointed to a
+        // suspend frame on its first switch-out — which always
+        // precedes any later switch-in (a process is selectable only
+        // after being demoted, and the demotion is the switch-out).
+        // The invariant that keeps the clobber harmless: a context
+        // pointer is never read for a switch-in unless it was last
+        // written by a switch-out of that same process, or it is the
+        // forkret context of a process that has not trapped yet.
         let ctx = context_base as *mut Context;
         (*ctx).x30 = trapret as *const () as u64;
         (*ctx).sp = frame_base as u64;
@@ -333,6 +425,13 @@ pub fn run_all() {
     // landing in that window would see TPIDR non-null while the kernel
     // is still on the caller's stack, not a process's kstack.
     let _guard = IrqGuard::new();
+    // Start the preemption tick before the first switch: a one-time
+    // start, never restarted or cancelled.  It keeps firing after the
+    // table runs empty, harmlessly — with no current process the
+    // tail consumes the flag and does nothing.
+    if !TICK_STARTED.swap(true, Ordering::AcqRel) {
+        TICK_TIMER.start();
+    }
     let node = LockNode::new();
     let first = {
         let table = TABLE.lock(&node);
@@ -570,4 +669,12 @@ pub(crate) fn exit_current(_status: u64) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+#[cfg(not(target_os = "none"))]
+pub(crate) fn irq_resched() {}
+
+#[cfg(not(target_os = "none"))]
+pub fn preemptions() -> u64 {
+    0
 }
