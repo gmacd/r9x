@@ -161,8 +161,10 @@ pub extern "C" fn main9(dtb_va: usize) {
     // enters with IRQs unmasked, so the timers keep firing while it
     // runs.  The kernel resumes here when it exits.
     println!("starting first process");
-    let status = process::run(&FIRST_PROCESS_TEXT, USER_TEXT_VA, USER_STACK_VA);
-    println!("first process returned, status {status}");
+    let id = process::spawn(&FIRST_PROCESS_TEXT, USER_TEXT_VA, USER_STACK_VA);
+    process::run_all();
+    let status = process::status(id);
+    println!("first process returned, status {status:?}");
 
     let _b = Box::new("ddododo");
 

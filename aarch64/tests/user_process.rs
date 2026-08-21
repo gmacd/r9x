@@ -55,10 +55,12 @@ pub extern "C" fn main9(dtb_va: usize) {
     // If the switch-back were broken, the resume would fault or
     // wander before this line runs at all.
     println!("starting first process");
-    let status = process::run(&SYSCALL_EXIT, USER_TEXT_VA, USER_STACK_VA);
-    println!("first process returned, status {status}");
+    let id = process::spawn(&SYSCALL_EXIT, USER_TEXT_VA, USER_STACK_VA);
+    process::run_all();
+    let status = process::status(id);
+    println!("first process returned, status {status:?}");
 
-    check!(status == process::SYSEXIT, "process exited by sysexit, status {status}");
+    check!(status == Some(process::SYSEXIT), "process exited by sysexit, status {status:?}");
 
     println!("user_process passed");
     qemu::exit(qemu::PASS);

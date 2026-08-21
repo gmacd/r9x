@@ -123,6 +123,11 @@ pub struct TrapFrame {
     /// The interrupted context's stack pointer: sp before the frame
     /// push for an EL1 exception, SP_EL0 for an EL0 one.
     sp: u64,
+    /// SPSR_EL1 at the trap: the PSTATE of the interrupted context.  For
+    /// an EL0 exception that is the process's own PSTATE — the EL0 tail
+    /// stages it before its eret, since a switch-in resumes with kernel
+    /// values in the live SPSR_EL1.
+    spsr: u64,
 }
 
 impl fmt::Debug for TrapFrame {
@@ -164,6 +169,7 @@ impl fmt::Debug for TrapFrame {
             .field("far_el1", &format_args!("{:#018?}", self.far_el1))
             .field("interrupt_type", &self.interrupt_type_name())
             .field("sp", &format_args!("{:#018x}", self.sp))
+            .field("spsr", &format_args!("{:#018x}", self.spsr))
             .finish()
     }
 }
@@ -235,19 +241,25 @@ fn trap(frame: &mut TrapFrame) {
     }
 
     match frame.esr_el1.exception_class_enum() {
-        // An AArch64 SVC: the ISS is the svc immediate, i.e. the
-        // syscall number (Arm ARM DDI 0487, ESR_EL1).
+        // An AArch64 SVC: the syscall number is x8 at the trap —
+        // this kernel's own convention, Linux-arm64-style (x8 the
+        // number, x0-x5 future arguments); ESR_EL1.ISS holds the svc
+        // immediate for EC 0x15 (Arm ARM DDI 0487) and is not used.
         Ok(ExceptionClass::SvcAarch64) => {
-            let syscall = u64::from(frame.esr_el1.iss());
+            let syscall = frame.x8;
             if svc_returns(syscall) {
                 // Yield: the return is the whole handler; the vector's
                 // restore + eret puts the process back at the
-                // instruction after the svc.
+                // instruction after the svc.  The return is explicit:
+                // falling through would land in the unhandled-exception
+                // spin below.
+                process::yield_current();
                 return;
+            } else {
+                // Exit and an unimplemented number both end the
+                // process, with the svc number as status.
+                process::exit_current(syscall);
             }
-            // Exit and an unimplemented number both end the process,
-            // with the svc number as status.
-            syscall_exit(syscall);
         }
         _ => {
             // Synchronous exception (data abort, instruction abort, etc.)
@@ -267,62 +279,33 @@ fn svc_returns(syscall: u64) -> bool {
     syscall == process::SYSYIELD
 }
 
-/// A process asking to be killed, by exit or by an unimplemented
-/// syscall: record the status and switch back to the kernel context
-/// that started it.
-///
-/// Exit is the real one, and an unimplemented number kills with that
-/// number as status rather than returning to a program that would just
-/// re-issue it (a livelock) or spinning (a hang).  (Yield is the one
-/// svc that returns to the process — see `svc_returns`.)
-#[cfg(target_os = "none")]
-fn syscall_exit(syscall: u64) -> ! {
-    use crate::process;
-    use crate::swtch::{Context, SPSR_EL1H, swtch};
-
-    let kernel = unsafe { process::kernel_slot() };
-    if kernel.is_null() {
-        // Unreachable: no process is running, so no EL0 svc can have
-        // been taken.  Spin loudly rather than guess.
-        iprintln!("exit trap with no process running");
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    unsafe { process::set_exit_status(syscall) };
-    iprintln!("process exited, status {syscall}");
-
-    // This path never returns to trap_unsafe, so the enter_interrupt it
-    // took is never exited: balance it now, or the resumed kernel would
-    // believe it is still in interrupt context and every println would
-    // panic.
-    port::irq::exit_interrupt();
-
-    // Returning to the starter is a context switch, not an exception
-    // return: hardware eret restores no general registers, so the
-    // starter's x19-x30 can only come back through swtch.  The trap
-    // context is discarded; the slot just holds it until the switch.
-    let mut slot: *mut Context = core::ptr::null_mut();
-    unsafe { swtch(&mut slot, kernel, SPSR_EL1H) };
-    unreachable!("swtch resumed the discarded trap context");
-}
-
-#[cfg(not(target_os = "none"))]
-fn syscall_exit(_syscall: u64) -> ! {
-    // Host (unit-test) builds have no switch; the decode above is
-    // what they exercise.  Complete like an unhandled trap.
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::ExceptionType;
+    use super::TrapFrame;
     use super::svc_returns;
     use crate::process;
     use crate::reg::esr_el1::{EsrEl1, ExceptionClass};
+    use crate::swtch::Context;
+
+    // The frame layout is triple-maintained: the offsets spelled in
+    // trap.S, the process::FRAME_* constants, and these structs.  The
+    // pins below tie the constants to the structs; trap.S is tied to
+    // the constants by the numbers it spells (304, 256, 280, 288 and
+    // the 112-byte context), which the integration tests exercise
+    // end to end.
+    #[test]
+    fn trap_frame_layout_pins() {
+        assert_eq!(core::mem::size_of::<TrapFrame>(), process::FRAME_SZ);
+        assert_eq!(core::mem::offset_of!(TrapFrame, elr_el1), process::FRAME_ELR);
+        assert_eq!(core::mem::offset_of!(TrapFrame, sp), process::FRAME_SP);
+        assert_eq!(core::mem::offset_of!(TrapFrame, spsr), process::FRAME_SPSR);
+    }
+
+    #[test]
+    fn context_layout_pin() {
+        assert_eq!(core::mem::size_of::<Context>(), process::CONTEXT_SZ);
+    }
 
     #[test]
     fn exception_type_try_from_all_values() {

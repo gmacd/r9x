@@ -25,25 +25,68 @@ mod common;
 /// Assembled with `clang -target arm64` and re-checked by objdump;
 /// there is no assembler in the tree.
 ///
-/// x0 and x19 start at 0 (the entry context zeroes them), so the
+/// x8 is the syscall register (1 = yield, 5 = exit success), so the
+/// markers use x0/x19.  The first `cmp`/`b.ne` pair puts NZCV *live*
+/// across the yield: `b.ne fail_d` after the svc branches on flags
+/// set before the trap, so a return that clobbers PSTATE (NZCV) fails
+/// the image instead of the later marker checks.  The registers and
+/// the stack slot start at 0 (the entry context zeroes them), so the
 /// markers are distinct from their starting values.
-const YIELD_PROGRAM: [u8; 64] = [
-    0xb3, 0x00, 0x80, 0xd2, // mov x19, #5      ; callee-saved marker
-    0xe0, 0x00, 0x80, 0xd2, // mov x0, #7       ; caller-saved marker
-    0xe0, 0x07, 0x00, 0xf9, // str x0, [sp, #8] ; stack marker
-    0x21, 0x00, 0x00, 0xd4, // svc #1           ; yield
+const YIELD_PROGRAM: [u8; 0x6c] = [
+    // 0x00
+    0xb3, 0x00, 0x80, 0xd2, // mov x19, #5
+    // 0x04
+    0xe0, 0x00, 0x80, 0xd2, // mov x0, #7
+    // 0x08
+    0xe0, 0x07, 0x00, 0xf9, // str x0, [sp, #8]
+    // 0x0c
     0x1f, 0x1c, 0x00, 0xf1, // cmp x0, #7
-    0x01, 0x01, 0x00, 0x54, // b.ne fail_a
+    // 0x10
+    0xa1, 0x02, 0x00, 0x54, // b.ne fail_d
+    // 0x14
+    0x28, 0x00, 0x80, 0xd2, // mov x8, #1
+    // 0x18
+    0x01, 0x00, 0x00, 0xd4, // svc #0
+    // 0x1c
+    0x41, 0x02, 0x00, 0x54, // b.ne fail_d
+    // 0x20
+    0x1f, 0x1c, 0x00, 0xf1, // cmp x0, #7
+    // 0x24
+    0x41, 0x01, 0x00, 0x54, // b.ne fail_a
+    // 0x28
     0x7f, 0x16, 0x00, 0xf1, // cmp x19, #5
-    0xe1, 0x00, 0x00, 0x54, // b.ne fail_b
-    0xe1, 0x07, 0x40, 0xf9, // ldr x1, [sp, #8]
-    0x3f, 0x1c, 0x00, 0xf1, // cmp x1, #7
-    0xa1, 0x00, 0x00, 0x54, // b.ne fail_c
-    0x21, 0x00, 0x00, 0xd4, // svc #1           ; yield
-    0xa1, 0x00, 0x00, 0xd4, // svc #5           ; success: reached the end
-    0x61, 0x00, 0x00, 0xd4, // fail_a: svc #3   ; x0 did not survive
-    0x81, 0x00, 0x00, 0xd4, // fail_b: svc #4   ; x19 did not survive
-    0xc1, 0x00, 0x00, 0xd4, // fail_c: svc #6   ; the stack slot did not
+    // 0x2c
+    0x41, 0x01, 0x00, 0x54, // b.ne fail_b
+    // 0x30
+    0xe0, 0x07, 0x40, 0xf9, // ldr x0, [sp, #8]
+    // 0x34
+    0x1f, 0x1c, 0x00, 0xf1, // cmp x0, #7
+    // 0x38
+    0x21, 0x01, 0x00, 0x54, // b.ne fail_c
+    // 0x3c
+    0x28, 0x00, 0x80, 0xd2, // mov x8, #1
+    // 0x40
+    0x01, 0x00, 0x00, 0xd4, // svc #0
+    // 0x44
+    0xa8, 0x00, 0x80, 0xd2, // mov x8, #5
+    // 0x48
+    0x01, 0x00, 0x00, 0xd4, // svc #0
+    // 0x4c (fail_a)
+    0x68, 0x00, 0x80, 0xd2, // mov x8, #3
+    // 0x50
+    0x01, 0x00, 0x00, 0xd4, // svc #0
+    // 0x54 (fail_b)
+    0x88, 0x00, 0x80, 0xd2, // mov x8, #4
+    // 0x58
+    0x01, 0x00, 0x00, 0xd4, // svc #0
+    // 0x5c (fail_c)
+    0xc8, 0x00, 0x80, 0xd2, // mov x8, #6
+    // 0x60
+    0x01, 0x00, 0x00, 0xd4, // svc #0
+    // 0x64 (fail_d)
+    0x48, 0x00, 0x80, 0xd2, // mov x8, #2
+    // 0x68
+    0x01, 0x00, 0x00, 0xd4, // svc #0
 ];
 
 /// Where the user text and stack are mapped.
@@ -70,12 +113,14 @@ pub extern "C" fn main9(dtb_va: usize) {
     }
 
     println!("starting yield process");
-    let status = process::run(&YIELD_PROGRAM, USER_TEXT_VA, USER_STACK_VA);
-    println!("yield process returned, status {status}");
+    let id = process::spawn(&YIELD_PROGRAM, USER_TEXT_VA, USER_STACK_VA);
+    process::run_all();
+    let status = process::status(id);
+    println!("yield process returned, status {status:?}");
 
     // 5 is the program's success exit; 3, 4 and 6 are its failure
     // exits (a marker did not survive a yield).
-    check!(status == 5, "both yields returned the process intact, status {status}");
+    check!(status == Some(5), "both yields returned the process intact, status {status:?}");
 
     println!("user_yield passed");
     qemu::exit(qemu::PASS);

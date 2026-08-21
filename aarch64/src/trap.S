@@ -83,6 +83,12 @@ interruptstackbase:	.space INTERRUPTSTACKSZ
 	// Interrupt type
 	ldr	x3, =\type
 	str	x3, [sp, #16 * 17]
+
+	// Interrupted SPSR: trapret stages it back before the eret, so a
+	// process resumed through a switch gets its own PSTATE (NZCV in
+	// particular) back instead of the slot's initial value.
+	mrs	x3, spsr_el1
+	str	x3, [sp, #16 * 18]
 .endm
 
 // Restore x0-x30 from the frame at sp.
@@ -119,11 +125,11 @@ interruptstackbase:	.space INTERRUPTSTACKSZ
 	// so #2 is the I bit (Arm ARM DDI 0487).
 	msr	daifset, #2
 
-	sub 	sp, sp, #288
+	sub 	sp, sp, #304
 	save_frame \type
 
 	// The interrupted sp is where the frame push started.
-	add	x0, sp, #288
+	add	x0, sp, #304
 	str	x0, [sp, #16 * 17 + 8]
 
 	// Pass pointer to TrapFrame (on stack) as the first arg
@@ -131,52 +137,40 @@ interruptstackbase:	.space INTERRUPTSTACKSZ
 	bl	trap_unsafe
 
 	restore_frame
-	add	sp, sp, #288
+	add	sp, sp, #304
 
 	eret
 .endm
 
-// An exception taken from EL0: SP_EL1 is not a live kernel stack here —
-// swtch left it pointing into the process's entry context — so switch
-// to the dedicated interrupt stack.  Nothing valid lives on it between
-// exceptions (single core, one process), so starting from its top each
-// time is sound, and sp needs no restore: the eret returns to EL0 on
-// SP_EL0, and the next EL0 entry resets SP_EL1 again.
+// An exception taken from EL0: SP_EL1 is the process's own kstack
+// (its top is the invariant the process runs under), so the frame is
+// pushed straight there with no scratch register before save_frame —
+// x0-x18 are all stored — and no TPIDR parking: TPIDR_EL1 now carries
+// the current-process pointer for the Rust side, a use the parking
+// hack (which overwrote TPIDR on every trap) was mutually exclusive
+// with.
 .macro	handle_interrupt_el0 type
-	// Mask IRQs before anything else: one landing between vector entry
-	// and the stack switch would push its frame on whatever sp held.
-	// eret restores the interrupted DAIF from the hardware SPSR_EL1,
-	// so the mask leaks nowhere.
+	// Mask IRQs before anything else: one landing before the frame is
+	// pushed would walk the kstack's top with no frame under it.  eret
+	// restores the interrupted DAIF from the hardware SPSR_EL1, so the
+	// mask leaks nowhere.
 	msr	daifset, #2
 
-	// Park x0 in TPIDR_EL1 (otherwise unused; single core) so the
-	// stack switch does not clobber the value the frame must save.
-	msr	tpidr_el1, x0
-	ldr	x0, =interruptstackbase + INTERRUPTSTACKSZ - 288
-	mov	sp, x0
-	mrs	x0, tpidr_el1
-
+	sub	sp, sp, #304
 	save_frame \type
 
 	// The interrupted sp is the process's, on SP_EL0.
 	mrs	x0, sp_el0
 	str	x0, [sp, #16 * 17 + 8]
 
-	// Pass pointer to TrapFrame (on stack) as the first arg
+	// Pass pointer to TrapFrame (on the stack) as the first arg
 	mov	x0, sp
 	bl	trap_unsafe
 
-	// Restore the process's user stack pointer before the eret:
-	// AArch64 eret copies no stack pointer (Arm ARM DDI 0487,
-	// AArch64.ExceptionReturn), so without this the process resumes
-	// with whatever SP_EL0 held — boot garbage, i.e. 0.  x0-x18 are
-	// dead until restore_frame, so x6 is a safe scratch here.
-	ldr	x6, [sp, #16 * 17 + 8]
-	msr	sp_el0, x6
-
-	restore_frame
-
-	eret
+	// Every EL0 return goes through the shared tail, which switch-ins
+	// (forkret entry, a resched resume) reach by eret into trapret
+	// with sp = frame base — exactly as this bl returns.
+	b	trapret
 .endm
 
 /// The exception vector table for exceptions taken to EL1.
@@ -256,3 +250,34 @@ fiq_invalid_el0_32:
 
 error_invalid_el0_32:
 	handle_interrupt_el0  ERROR_INVALID_EL0_32
+
+// The EL0 tail, shared by every EL0 return path and reached by
+// switch-in with sp = the frame's base.  SPSR, ELR and the user stack
+// pointer are staged from the frame — not left to the live registers
+// — because a switch-in that erets here leaves kernel values in them
+// (swtch wrote them for the context it resumed), and the frame holds
+// the process's own.  x0-x18 are dead until restore_frame, so x6 is
+// a safe scratch.  DAIF.I has been masked since vector entry (no
+// nested exception can land between the msr's and the eret: SPSR_EL1
+// is a holding register, the live PSTATE stays masked).
+//
+// x6 is the scratch: it is dead on every path (vector entry stores it
+// before the handler; a switch-in erets here with x6 = the saved
+// kernel value), and restore_frame restores it before the eret.
+//
+// The frame holds no saved SP_EL1 — that is the point: a process runs
+// on its own kstack, so sp at the frame base IS the kstack top, and
+// the add below is what puts the invariant back.
+.globl	trapret
+trapret:
+	ldr	x6, [sp, #16 * 18]
+	msr	spsr_el1, x6
+	ldr	x6, [sp, #16 * 16]
+	msr	elr_el1, x6
+	ldr	x6, [sp, #16 * 17 + 8]
+	msr	sp_el0, x6
+
+	restore_frame
+	add	sp, sp, #304
+
+	eret

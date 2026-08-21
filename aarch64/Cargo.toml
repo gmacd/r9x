@@ -39,6 +39,16 @@ harness = false
 required-features = ["qemu-test"]
 
 [[test]]
+name = "two_process"
+harness = false
+required-features = ["qemu-test"]
+
+[[test]]
+name = "two_yield"
+harness = false
+required-features = ["qemu-test"]
+
+[[test]]
 name = "timers"
 harness = false
 required-features = ["qemu-test"]
