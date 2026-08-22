@@ -32,7 +32,8 @@ pub struct Pl011Uart {
 /// and EEPROM (rpi4) to assign to the serial GPIO pins.
 impl Pl011Uart {
     pub fn new(dt: &DeviceTree) -> Result<Pl011Uart> {
-        let gpio_physrange = find_dt_physrange(dt, &["brcm,bcm2835-gpio"], "can't find gpio")?;
+        let gpio_physrange =
+            find_dt_physrange(dt, &["brcm,bcm2835-gpio", "brcm,bcm2711-gpio"], "can't find gpio")?;
         let gpio_virtrange = match map_device_register("gpio", gpio_physrange, vm::PageSize::Page4K)
         {
             Ok(gpio_virtrange) => gpio_virtrange,
