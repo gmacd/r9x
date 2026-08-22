@@ -5,16 +5,12 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(not(test), no_main)]
 
-extern crate alloc;
-
 use aarch64::kmem::{
     boottext_physrange, bss_physrange, data_physrange, rodata_physrange, text_physrange,
     total_kernel_physrange,
 };
-use aarch64::param::KZERO;
-use aarch64::vm::{Entry, RootPageTableType, VaMapping};
+use aarch64::vm::RootPageTableType;
 use aarch64::{boot, mailbox, pagealloc, process, vm};
-use alloc::boxed::Box;
 use port::mem::{PhysRange, VirtRange};
 use port::println;
 
@@ -125,28 +121,6 @@ pub extern "C" fn main9(dtb_va: usize) {
     print_board_info();
     print_memory_info();
 
-    // Test code
-    {
-        let page_table = vm::kernel_pagetable();
-        let entry = Entry::rw_kernel_data();
-        for i in 0..3 {
-            let alloc_result = pagealloc::allocate_virtpage(
-                page_table,
-                "testkernel",
-                entry,
-                VaMapping::Offset(KZERO),
-                RootPageTableType::Kernel,
-            );
-            match alloc_result {
-                Ok(_allocated_page) => {}
-                Err(err) => {
-                    println!("Error allocating page in kernel space ({i}): {:?}", err);
-                    break;
-                }
-            }
-        }
-    }
-
     println!("Set up a user process");
 
     unsafe {
@@ -166,13 +140,12 @@ pub extern "C" fn main9(dtb_va: usize) {
     let status = process::status(id);
     println!("first process returned, status {status:?}");
 
-    let _b = Box::new("ddododo");
-
     println!("looping now");
 
     #[allow(clippy::empty_loop)]
     loop {}
 }
 
-// User process setup now lives in aarch64/tests/user_process.rs, and
-// the timer exercise in aarch64/tests/timers.rs.
+// User process setup now lives in aarch64/tests/user_process.rs, the timer
+// exercise in aarch64/tests/timers.rs, and the page/heap allocation exercise
+// in aarch64/tests/allocate.rs.
