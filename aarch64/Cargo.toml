@@ -58,5 +58,15 @@ name = "timers"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "pl011"
+harness = false
+required-features = ["qemu-test"]
+
+[[test]]
+name = "miniuart"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true
