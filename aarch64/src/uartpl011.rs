@@ -22,7 +22,6 @@ pub const UART0_CR: usize = 0x30; // Control register
 pub const UART0_IMSC: usize = 0x38; // Interrupt mask set clear register
 pub const UART0_ICR: usize = 0x44; // Interrupt clear register
 
-#[allow(dead_code)]
 pub struct Pl011Uart {
     gpio_virtrange: VirtRange,
     pl011_virtrange: VirtRange,
@@ -31,7 +30,6 @@ pub struct Pl011Uart {
 /// PL011 is the default in qemu (UART0), but a bit fiddly to use on a real
 /// Raspberry Pi board, as it needs additional configuration in the config
 /// and EEPROM (rpi4) to assign to the serial GPIO pins.
-#[allow(dead_code)]
 impl Pl011Uart {
     pub fn new(dt: &DeviceTree) -> Result<Pl011Uart> {
         let gpio_physrange = find_dt_physrange(dt, &["brcm,bcm2835-gpio"], "can't find gpio")?;
@@ -101,16 +99,16 @@ impl Pl011Uart {
         let gppudclk_reg = GPPUDCLK0 + reg_offset * 4;
 
         // You can't read the GPPUD registers, so to set the state we first set the PUD value we want...
-        write_reg(&self.pl011_virtrange, GPPUD, pull as u32);
+        write_reg(&self.gpio_virtrange, GPPUD, pull as u32);
         // ...wait 150 cycles for it to set
         delay(150);
         // ...set the appropriate PUD bit
-        write_reg(&self.pl011_virtrange, gppudclk_reg, pud_bit);
+        write_reg(&self.gpio_virtrange, gppudclk_reg, pud_bit);
         // ...wait 150 cycles for it to set
         delay(150);
         // ...clear up
-        write_reg(&self.pl011_virtrange, GPPUD, 0);
-        write_reg(&self.pl011_virtrange, gppudclk_reg, 0);
+        write_reg(&self.gpio_virtrange, GPPUD, 0);
+        write_reg(&self.gpio_virtrange, gppudclk_reg, 0);
     }
 }
 
