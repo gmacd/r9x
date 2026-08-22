@@ -43,6 +43,9 @@ impl VirtRange {
     }
 }
 
+/// Infallible conversion, for length-guaranteed extents.  A reg with no
+/// length collapses to a zero-size range (see `PhysRange::from_regblock` for
+/// the fallible device-register path).
 impl From<&RegBlock> for VirtRange {
     fn from(r: &RegBlock) -> Self {
         let start = r.addr as usize;
@@ -154,6 +157,20 @@ impl PhysRange {
         Self { start, end: PhysAddr(start.0 + len as u64) }
     }
 
+    /// Build a device-register range from a device-tree reg block, or `None`
+    /// if the block carries no length (`size_cells == 0`).
+    ///
+    /// This is the fallible path for firmware-supplied device registers.  A
+    /// reg with no length would become a zero-size range, on which every
+    /// `offset_addr` is `None` and the first MMIO access aborts (in interrupt
+    /// context, via the GIC).  Probes use this to turn that into a named probe
+    /// error instead of arming the abort.  The infallible `From<&RegBlock>` is
+    /// for length-guaranteed extents (memory), not device registers.
+    pub fn from_regblock(r: &RegBlock) -> Option<PhysRange> {
+        let len = r.len?;
+        Some(PhysRange::with_len(r.addr, len as usize))
+    }
+
     #[allow(dead_code)]
     pub fn offset_addr(&self, offset: u64) -> Option<PhysAddr> {
         let addr = self.start + offset;
@@ -193,6 +210,9 @@ impl fmt::Display for PhysRange {
     }
 }
 
+/// Infallible conversion, for length-guaranteed extents (e.g. memory nodes).
+/// Device registers must use `PhysRange::from_regblock`, which refuses a reg
+/// with no length rather than silently collapsing it to a zero-size range.
 impl From<&RegBlock> for PhysRange {
     fn from(r: &RegBlock) -> Self {
         let start = PhysAddr(r.addr);

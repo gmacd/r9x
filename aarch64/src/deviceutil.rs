@@ -13,13 +13,15 @@ pub fn find_dt_physrange(
     compatibles: &'static [&'static str],
     err: &'static str,
 ) -> Result<PhysRange> {
-    compatibles
+    let reg = compatibles
         .iter()
         .find_map(|c| dt.find_compatible(c).next())
         .and_then(|node| dt.property_translated_reg_iter(node).next())
         .and_then(|reg| reg.regblock())
-        .map(|reg| PhysRange::from(&reg))
-        .ok_or(err)
+        .ok_or(err)?;
+    // A reg with no length is a probe error, not an extent: reject it here
+    // rather than map a zero-size range that would abort on first access.
+    PhysRange::from_regblock(&reg).ok_or("device reg has no length (size_cells == 0)")
 }
 
 /// Map a device register to device memory

@@ -377,7 +377,7 @@ fn find_gicc_gicd_virtranges(dt: &DeviceTree, id: &'static str) -> Result<(VirtR
             .property_translated_reg_iter(gic_node)
             .nth(1)
             .and_then(|reg| reg.regblock())
-            .map(|reg| PhysRange::from(&reg))
+            .and_then(|reg| PhysRange::from_regblock(&reg))
             .map(|physrange| map_device_register("gicc", physrange, vm::PageSize::Page4K))
             .unwrap_or(Err("can't get gicc regblock from devicetree"))?;
 
@@ -385,7 +385,7 @@ fn find_gicc_gicd_virtranges(dt: &DeviceTree, id: &'static str) -> Result<(VirtR
             .property_translated_reg_iter(gic_node)
             .next()
             .and_then(|reg| reg.regblock())
-            .map(|reg| PhysRange::from(&reg))
+            .and_then(|reg| PhysRange::from_regblock(&reg))
             .map(|physrange| map_device_register("gicd", physrange, vm::PageSize::Page4K))
             .unwrap_or(Err("can't get gicd regblock from devicetree"))?;
 
