@@ -63,7 +63,9 @@ pub extern "C" fn main9(dtb_va: usize) {
     check!(
         vas[0] != vas[1] && vas[1] != vas[2] && vas[0] != vas[2],
         "the three kernel pages are distinct ({:#x} {:#x} {:#x})",
-        vas[0], vas[1], vas[2]
+        vas[0],
+        vas[1],
+        vas[2]
     );
     let (used_after, _total) = pagealloc::usage_bytes();
     check!(
