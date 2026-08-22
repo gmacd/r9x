@@ -206,7 +206,7 @@ pub fn intid() -> u16 {
 /// fails here.  That is the loud way to say the board is out of scope.
 fn timer_intid_from_dt(dt: &DeviceTree) -> Result<u16> {
     let node = dt.find_compatible("arm,armv8-timer").next().ok_or(
-        "no arm,armv8-timer node in devicetree: the timer PPI is not GIC-routed (on the Pi 3's bcm2837 it goes through the local interrupt controller, which is not supported)",
+        "no arm,armv8-timer node in devicetree: the timer PPI is not GIC-routed (on the Pi 3's bcm2837 it goes through the local interrupt controller; the Pi 3 is out of scope — see AGENTS.md)",
     )?;
     if dt.property(&node, "interrupt-names").is_some() {
         return Err(

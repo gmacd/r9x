@@ -2,6 +2,12 @@ r9 is a cross-platform Plan9-inspired OS written in Rust.
 
 The architectures supported are: aarch64, x86-64 and riscv64.
 
+On aarch64, r9 targets machines whose generic-timer PPI is GIC-routed —
+the BCM2711 (Pi 4) and QEMU's `raspi4b` machine.  The Pi 3 is out of
+scope: its BCM2837 routes the timer PPIs through the bcm2836 local
+interrupt controller rather than its GIC-400, and r9 says so loudly at
+boot rather than trying to guess the wiring (`timer::init`).
+
 The project is designed for multi-core SMP. All concurrency primitives, initialization patterns, and shared data structures must be correct under multi-core execution — never assume single-core.
 
 The project must be free of errors and warnings at all times, including those from check and clippy, and for all supported architectures.  All tests must pass.
