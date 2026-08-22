@@ -41,18 +41,21 @@ const GICC_IIDR: usize = 0x00fc; // CPU Interface Identification Register
 const GICD_CTLR: usize = 0x0000;
 // The GICv2 map is not the GICv3 one: priority sits at 0x400, not
 // 0x000, and 0x000-0x0fc is CTLR/TYPER/IGROUPR, not priority.
+const GICD_TYPER: usize = 0x0004; // Type register (read-only GICD_CTLR)
 const GICD_IPRIORITYR: usize = 0x0400; // Priority registers (0x400-0x7fc)
 const GICD_ISENABLER: usize = 0x0100; // Set-enable registers (0x100-0x17c)
 const GICD_ICENABLER: usize = 0x0180; // Clear-enable registers (0x180-0x1fc)
 const GICD_ICPENDR: usize = 0x0280; // Clear-pending registers (0x280-0x2fc)
+// GICD_CLRSPINACT on GICv2 hardware: the 0x380 block is clear-active
+// for SPI 32..63, whose private bits are reserved there; QEMU models
+// it as banked clear-active across INTIDs 0..31 as well.
 const GICD_ICACTIVER: usize = 0x0380; // Clear-active registers (0x380-0x3fc)
 
-// The GICv2 INTID space is 32 blocks of 32 INTIDs.  The enable, pending
-// and active registers are one 32-bit word per block; the priority
-// registers hold four INTIDs per word, so 256 words cover the same
-// space.
-const GICD_INTID_BLOCKS: usize = 32;
-const GICD_PRIORITY_WORDS: usize = GICD_INTID_BLOCKS * 8;
+// The banked private range — SGIs 0..15, PPIs 16..31 — is
+// architecturally fixed at INTIDs 0..31, whatever ITLinesNumber says:
+// 8 priority words (four INTIDs per word) and 4 enable/pending/active
+// words (eight INTIDs per word).
+const GICD_BANKED_INTIDS: usize = 32;
 
 // The priority the kernel gives every INTID it programs: 0xa0, Linux's
 // GICD_INT_DEF_PRI (include/linux/irqchip/arm-gic-common.h).  An
@@ -216,6 +219,10 @@ pub fn init(dt: &DeviceTree) {
 struct Gic {
     gicc_virtrange: VirtRange,
     gicd_virtrange: VirtRange,
+    /// The machine's INTID space in 32-INTID blocks (GICD_TYPER's
+    /// ITLinesNumber plus one): the distributor sweeps are sized from
+    /// it, never from the architectural maximum.
+    intid_blocks: usize,
 }
 
 impl Gic {
@@ -232,7 +239,12 @@ impl Gic {
             return Err("gic v1 unsupported");
         }
 
-        Ok(Gic { gicc_virtrange, gicd_virtrange })
+        // ITLinesNumber is the block count minus one, so this is the
+        // 1..32 the architecture allows.
+        let intid_blocks =
+            GicdTyper(read_reg(&gicd_virtrange, GICD_TYPER)).it_lines_number() as usize + 1;
+
+        Ok(Gic { gicc_virtrange, gicd_virtrange, intid_blocks })
     }
 
     /// System-wide bringup: establish every part of the distributor's
@@ -245,18 +257,19 @@ impl Gic {
     /// moment anything re-enables it, and one left at priority 0xff is
     /// never forwarded to a core running PMR 0xff — it cannot fire and
     /// nothing explains why.  The sweeps therefore cover the whole
-    /// INTID space, trusting nothing inherited; Linux follows the same
-    /// policy in gic_dist_init (drivers/irqchip/irq-gic.c).  The
-    /// INTID 0..31 registers are banked per core on GICv2, so the
-    /// sweeps here reach only the boot core's bank; `init_cpu`
-    /// re-establishes the banked half on every core.
+    /// INTID space the machine implements (Linux sizes its sweeps the
+    /// same way, from ITLinesNumber, drivers/irqchip/irq-gic.c),
+    /// trusting nothing inherited.  The INTID 0..31 registers are
+    /// banked per core on GICv2, so the sweeps here reach only the
+    /// boot core's bank; `init_cpu` re-establishes the banked half on
+    /// every core.
     fn init_distributor(&self) {
         // Disable every INTID.
-        for block in 0..GICD_INTID_BLOCKS {
+        for block in 0..self.intid_blocks {
             write_reg(&self.gicd_virtrange, GICD_ICENABLER + 4 * block, !0);
         }
         // Clear every pending bit.
-        for block in 0..GICD_INTID_BLOCKS {
+        for block in 0..self.intid_blocks {
             write_reg(&self.gicd_virtrange, GICD_ICPENDR + 4 * block, !0);
         }
         // Default priority for the whole INTID space.  An interrupt is
@@ -264,7 +277,7 @@ impl Gic {
         // the core's PMR, and a stale 0xff (or a PPI bank left at it)
         // equals the PMR and is never delivered, with nothing to say
         // why.
-        for word in 0..GICD_PRIORITY_WORDS {
+        for word in 0..self.intid_blocks * 8 {
             write_reg(&self.gicd_virtrange, GICD_IPRIORITYR + 4 * word, DEFAULT_PRIORITY_WORD);
         }
         write_reg(&self.gicd_virtrange, GICD_CTLR, GicdCtlr(0).with_enable(true).into());
@@ -273,30 +286,37 @@ impl Gic {
     /// Per-core bringup: run on every core that takes interrupts.
     ///
     /// GICC_PMR and GICC_CTLR are banked per CPU interface, and the
-    /// INTID 0..31 registers (SGIs and PPIs) are banked per core.  A
-    /// secondary that skips this comes up with every priority masked
-    /// and its CPU interface disabled, however thoroughly the boot
-    /// core initialised.
+    /// INTID 0..=31 registers (SGIs and PPIs) are banked per core.  A
+    /// secondary that skips this comes up with every priority masked,
+    /// whatever firmware left its private interrupts enabled, and its
+    /// CPU interface disabled — however thoroughly the boot core
+    /// initialised.
     /// The banking is done by the hardware behind one set of addresses,
     /// so there is no per-core state to store: every core runs this
     /// through the same shared mappings.
     fn init_cpu(&self) {
         // Firmware and earlier boot stages leave state behind in the
-        // banked INTID 0..32 registers, and it is not ours to inherit:
-        // an interrupt left Active is never delivered again, and one
-        // left enabled arrives with no handler.  Clear both before
-        // enabling anything.  (Linux does this per core in
-        // gic_cpu_config(), drivers/irqchip/irq-gic-common.c.)
-        write_reg(&self.gicd_virtrange, GICD_ICACTIVER, !0);
-        write_reg(&self.gicd_virtrange, GICD_ICENABLER, !0);
-        // The priority registers for INTIDs 0..31 are banked per core,
-        // so this core programs its own bank — the distributor's sweep
-        // reached only the boot core's.  A timer PPI left at 0xff by
-        // firmware is numerically equal to the PMR about to be set and
-        // is never forwarded, with nothing to say why.  Linux writes
-        // the same default per core in gic_cpu_config()
-        // (drivers/irqchip/irq-gic-common.c).
-        for word in 0..GICD_INTID_BLOCKS / 4 {
+        // banked private registers, and it is not ours to inherit:
+        // an interrupt left enabled arrives with no handler, and one
+        // left active is never delivered again until something ends
+        // it.  Clear both across the whole banked range — the boot
+        // core's sweeps reached only its own bank — before enabling
+        // anything.  (Linux's per-core pass clears the same registers,
+        // one word each, drivers/irqchip/irq-gic-common.c
+        // gic_cpu_config; we don't share its assumption about the
+        // other words.)
+        for word in 0..GICD_BANKED_INTIDS / 8 {
+            write_reg(&self.gicd_virtrange, GICD_ICACTIVER + 4 * word, !0);
+            write_reg(&self.gicd_virtrange, GICD_ICENABLER + 4 * word, !0);
+        }
+        // The priority registers for INTIDs 0..=31 are banked per
+        // core, so this core programs its own bank — the
+        // distributor's sweep reached only the boot core's.  A timer
+        // PPI left at 0xff by firmware is numerically equal to the PMR
+        // about to be set and is never forwarded, with nothing to say
+        // why.  Linux writes the same default per core in
+        // gic_cpu_config() (drivers/irqchip/irq-gic-common.c).
+        for word in 0..GICD_BANKED_INTIDS / 4 {
             write_reg(&self.gicd_virtrange, GICD_IPRIORITYR + 4 * word, DEFAULT_PRIORITY_WORD);
         }
         // Admit all priorities (lower value = higher priority; 0xff is
