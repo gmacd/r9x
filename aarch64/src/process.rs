@@ -430,7 +430,10 @@ pub fn run_all() {
     // table runs empty, harmlessly — with no current process the
     // tail consumes the flag and does nothing.
     if !TICK_STARTED.swap(true, Ordering::AcqRel) {
-        TICK_TIMER.start();
+        // The tick is the scheduler's heartbeat: without it the kernel
+        // cannot pre-empt, and a kernel that cannot pre-empt cannot go
+        // on.
+        TICK_TIMER.start().unwrap();
     }
     let node = LockNode::new();
     let first = {

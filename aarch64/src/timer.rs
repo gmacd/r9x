@@ -61,10 +61,11 @@ impl Timer {
         timer
     }
 
-    /// Register and arm the timer.  Panics if the timer table is full,
-    /// or if a periodic timer's period is shorter than one counter
-    /// tick.
-    pub fn start(&'static self) {
+    /// Register and arm the timer.  Fails if the timer table is full —
+    /// eight *active* timers, since a slot whose timer is no longer
+    /// active is reclaimed — and panics if a periodic timer's period is
+    /// shorter than one counter tick.
+    pub fn start(&'static self) -> Result<()> {
         let ticks = duration_to_ticks(self.duration);
         // The re-arm in interrupt_handler divides by the period, so a
         // periodic timer must be at least one tick long.  (A zero-tick
@@ -78,8 +79,15 @@ impl Timer {
         self.deadline_ticks.store(now() + ticks, Ordering::Relaxed);
         self.active.store(true, Ordering::Release);
         let _irq = IrqGuard::new();
-        register(self);
+        if let Err(e) = register(self) {
+            // Leave the timer as it was found: not in the table,
+            // inactive.  IRQs are masked, so nothing observes the
+            // transient state.
+            self.active.store(false, Ordering::Release);
+            return Err(e);
+        }
         arm_hardware();
+        Ok(())
     }
 
     /// Deactivate the timer.  Lazy: an already-armed hardware deadline
@@ -119,20 +127,20 @@ fn with_timers<R>(f: impl FnOnce(&mut [Option<&'static Timer>; MAX_TIMERS]) -> R
     f(&mut guard)
 }
 
-fn register(timer: &'static Timer) {
+fn register(timer: &'static Timer) -> Result<()> {
     with_timers(|timers| {
         // Already registered (a restart)?
         if timers.iter().flatten().any(|t| ptr::eq(*t, timer)) {
-            return;
+            return Ok(());
         }
         // Take a free slot, or one whose timer is no longer active.
         for slot in timers.iter_mut() {
             if slot.is_none_or(|t| !t.active.load(Ordering::Acquire)) {
                 *slot = Some(timer);
-                return;
+                return Ok(());
             }
         }
-        panic!("timer table full");
+        Err("timer table full: eight active timers")
     })
 }
 
@@ -379,7 +387,7 @@ mod tests {
         let _guard = reset(FREQ_1MS_PER_TICK);
         static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
         static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
-        TIMER.start();
+        TIMER.start().unwrap();
         assert_eq!(TIMER.deadline_ticks.load(Ordering::Relaxed), 10);
 
         // t=15, past the deadline: fires and re-arms in the future.
@@ -405,7 +413,7 @@ mod tests {
         // deactivate anyway.
         static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
         static TIMER: Timer = Timer::new(Duration::from_millis(10), &CALLBACK);
-        TIMER.start();
+        TIMER.start().unwrap();
 
         set_mock_count(15);
         interrupt_handler();
@@ -422,7 +430,7 @@ mod tests {
         let _guard = reset(FREQ_1MS_PER_TICK);
         static CALLBACK: CountingCallback = CountingCallback::new(2);
         static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
-        TIMER.start();
+        TIMER.start().unwrap();
 
         set_mock_count(10);
         interrupt_handler();
@@ -444,7 +452,7 @@ mod tests {
         let _guard = reset(FREQ_1MS_PER_TICK);
         static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
         static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
-        TIMER.start();
+        TIMER.start().unwrap();
         TIMER.cancel();
 
         set_mock_count(50);
@@ -466,7 +474,7 @@ mod tests {
         impl TimerCallback for RestartOnce {
             fn fire(&self) -> bool {
                 if self.fires.fetch_add(1, Ordering::Relaxed) == 0 {
-                    TIMER.start();
+                    TIMER.start().unwrap();
                 }
                 false
             }
@@ -474,7 +482,7 @@ mod tests {
         static CALLBACK: RestartOnce = RestartOnce { fires: AtomicU64::new(0) };
         static TIMER: Timer = Timer::new(Duration::from_millis(10), &CALLBACK);
 
-        TIMER.start();
+        TIMER.start().unwrap();
         set_mock_count(15);
         interrupt_handler();
         assert_eq!(CALLBACK.fires.load(Ordering::Relaxed), 1);
@@ -485,6 +493,41 @@ mod tests {
         interrupt_handler();
         assert_eq!(CALLBACK.fires.load(Ordering::Relaxed), 2);
         assert!(!TIMER.active.load(Ordering::Acquire));
+    }
+
+    /// A full table is eight *active* timers: a slot whose timer is no
+    /// longer active is reclaimed, and a start that fails leaves its
+    /// timer out of the table and inactive.
+    #[test]
+    fn a_full_table_rejects_the_ninth_active_timer() {
+        let _guard = reset(FREQ_1MS_PER_TICK);
+        static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
+        static T0: Timer = Timer::new(Duration::from_millis(100), &CALLBACK);
+        static T1: Timer = Timer::new(Duration::from_millis(101), &CALLBACK);
+        static T2: Timer = Timer::new(Duration::from_millis(102), &CALLBACK);
+        static T3: Timer = Timer::new(Duration::from_millis(103), &CALLBACK);
+        static T4: Timer = Timer::new(Duration::from_millis(104), &CALLBACK);
+        static T5: Timer = Timer::new(Duration::from_millis(105), &CALLBACK);
+        static T6: Timer = Timer::new(Duration::from_millis(106), &CALLBACK);
+        static T7: Timer = Timer::new(Duration::from_millis(107), &CALLBACK);
+        static NINTH: Timer = Timer::new(Duration::from_millis(110), &CALLBACK);
+
+        T0.start().unwrap();
+        T1.start().unwrap();
+        T2.start().unwrap();
+        T3.start().unwrap();
+        T4.start().unwrap();
+        T5.start().unwrap();
+        T6.start().unwrap();
+        T7.start().unwrap();
+        assert!(NINTH.start().is_err());
+        // The failed start left the timer as it was found.
+        assert!(!NINTH.active.load(Ordering::Acquire));
+
+        // Reclaim one slot and the ninth fits.
+        T0.cancel();
+        NINTH.start().unwrap();
+        assert!(NINTH.active.load(Ordering::Acquire));
     }
 
     #[test]
@@ -508,7 +551,7 @@ mod tests {
         let _guard = reset(0);
         static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
         static TIMER: Timer = Timer::periodic(Duration::from_millis(10), &CALLBACK);
-        TIMER.start();
+        TIMER.start().unwrap();
     }
 
     #[test]
@@ -517,6 +560,6 @@ mod tests {
         let _guard = reset(FREQ_1MS_PER_TICK);
         static CALLBACK: CountingCallback = CountingCallback::new(u64::MAX);
         static TIMER: Timer = Timer::periodic(Duration::from_micros(500), &CALLBACK);
-        TIMER.start();
+        TIMER.start().unwrap();
     }
 }

@@ -102,9 +102,11 @@ pub extern "C" fn main9(dtb_va: usize) {
 
     println!("running timers");
 
-    FAST_TIMER.start();
-    LIMITED_TIMER.start();
-    STOP_FAST_TIMER.start();
+    // Three of the table's eight slots; the table is empty, so none
+    // can fail.
+    FAST_TIMER.start().unwrap();
+    LIMITED_TIMER.start().unwrap();
+    STOP_FAST_TIMER.start().unwrap();
 
     // The one-shot is the last scheduled event (40ms in); by the time
     // it has fired, the fast periodic has been cancelled and the
