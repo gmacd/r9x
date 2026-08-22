@@ -12,7 +12,7 @@ use core::time::Duration;
 use port::irq::IrqGuard;
 use port::mcslock::{Lock, LockNode};
 
-use crate::reg::cnt_el0::{CntFrqEl0, CntPctEl0, CntpCtlEl0, CntpCvalEl0};
+use crate::reg::cnt_el0::{CntFrqEl0, CntKctlEl1, CntPctEl0, CntpCtlEl0, CntpCvalEl0};
 
 /// Fired in interrupt context.  Return true to keep a periodic timer
 /// running; the return value is ignored for one-shot timers.
@@ -154,6 +154,12 @@ pub fn init() {
         panic!("timer: CNTFRQ_EL0=0: counter frequency not programmed by firmware");
     }
 
+    // Opt EL0 into reading the counter and its frequency: a process
+    // that can pace itself against the real clock (the preempt image
+    // does) instead of against a machine-speed-dependent instruction
+    // count.  EL0 access to the timer stays trapped.
+    CntKctlEl1::el0_counter_access().write();
+
     timer_disable();
 }
 
@@ -217,7 +223,7 @@ pub fn interrupt_handler() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reg::cnt_el0::{set_mock_count, set_mock_freq};
+    use crate::reg::cnt_el0::{mock_kctl, set_mock_count, set_mock_freq, set_mock_kctl};
     use std::sync::{Mutex, MutexGuard};
 
     // The tests drive the real start/cancel/interrupt_handler paths
@@ -235,6 +241,7 @@ mod tests {
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set_mock_freq(freq);
         set_mock_count(0);
+        set_mock_kctl(0);
         with_timers(|timers| *timers = [None; MAX_TIMERS]);
         guard
     }
@@ -374,6 +381,18 @@ mod tests {
         interrupt_handler();
         assert_eq!(CALLBACK.fires.load(Ordering::Relaxed), 2);
         assert!(!TIMER.active.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn init_opted_el0_into_the_counter() {
+        let _guard = reset(FREQ_1MS_PER_TICK);
+        assert_eq!(mock_kctl(), 0, "reset clears the opt-in");
+        init();
+        assert_eq!(
+            mock_kctl(),
+            CntKctlEl1::el0_counter_access().bits(),
+            "init enables EL0 reads of CNTPCT_EL0 and CNTFRQ_EL0, nothing else"
+        );
     }
 
     #[test]

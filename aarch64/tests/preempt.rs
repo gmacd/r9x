@@ -1,12 +1,16 @@
 //! Integration test: the tick preempts.
 //!
-//! A and B are both busy loops (no yield, a counter in x19) of
-//! 0xFFFFFFFF iterations — several seconds under QEMU TCG, so each
-//! process survives many 100 ms tick periods; A exits status 3, B
-//! status 4, via the catch-all.  The decrement is `subs`, not `sub`:
-//! the loop's `b.ne` reads the flag the decrement sets (plain `sub`
-//! leaves NZCV untouched and the branch tests a stale flag).  After
-//! `run_all`: assert both statuses **and** `preemptions() >= 2`.
+//! A and B are both busy loops (no yield) that each run for half a
+//! second of *real* time, paced against the physical counter
+//! (CNTPCT_EL0/CNTFRQ_EL0, EL0-readable because `timer::init` set the
+//! CNTKCTL_EL1 enable bits); A exits status 3, B status 4, via the
+//! catch-all.  Real-time pacing is what makes the test machine-
+//! independent: both the loop duration and the 100 ms tick period are
+//! real time, so any runner yields roughly ten preemptions whether
+//! its TCG is fast or slow, while a fixed instruction count is a
+//! different duration per machine and the count rides on machine
+//! speed.  After `run_all`: assert both statuses **and**
+//! `preemptions() >= 2`.
 //!
 //! The status pair alone would pass on a timeline where nothing is
 //! preempted (A runs to completion, B runs second).  `>= 2` requires
@@ -32,26 +36,38 @@ use port::println;
 #[macro_use]
 mod common;
 
-/// Busy loop of 0xFFFFFFFF iterations (x19 = 0xffffffff), then exit
-/// with status 3 (`mov x8, #3; svc #0`; x8 is the syscall register).
-/// Assembled with `clang -target arm64` and re-checked by objdump;
-/// there is no assembler in the tree.
-const PROG_A: [u8; 0x18] = [
-    0xf3, 0xff, 0x9f, 0xd2, // movz x19, #0xffff
-    0xf3, 0xff, 0xbf, 0xf2, // movk x19, #0xffff, lsl #16
-    0x73, 0x06, 0x00, 0xf1, // a_loop: subs x19, x19, #1
-    0xe1, 0xff, 0xff, 0x54, // b.ne a_loop
+/// Run for half a second of *real* time, then exit with status 3.
+/// Reads the counter frequency and paces the loop against the
+/// physical counter (both EL0-readable now that `timer::init` set
+/// CNTKCTL_EL1's EL0 enable bits), so the duration is the same on a
+/// fast or slow TCG runner: a fixed instruction count would be a
+/// different duration per machine and the preemption count would ride
+/// on machine speed.  `mov x8, #3` first: x8 survives the loop, so
+/// the exit needs no setup after it.  Assembled with
+/// `clang -target arm64` and re-checked by objdump; there is no
+/// assembler in the tree.
+const PROG_A: [u8; 0x24] = [
     0x68, 0x00, 0x80, 0xd2, // mov x8, #3
+    0x00, 0xe0, 0x3b, 0xd5, // mrs x0, cntfrq_el0
+    0x00, 0xfc, 0x41, 0xd3, // lsr x0, x0, #1
+    0x21, 0xe0, 0x3b, 0xd5, // mrs x1, cntpct_el0
+    0x24, 0x00, 0x00, 0x8b, // add x4, x1, x0
+    0x22, 0xe0, 0x3b, 0xd5, // a_loop: mrs x2, cntpct_el0
+    0x5f, 0x00, 0x04, 0xeb, // cmp x2, x4
+    0xcb, 0xff, 0xff, 0x54, // b.lt a_loop
     0x01, 0x00, 0x00, 0xd4, // svc #0
 ];
 
 /// Same shape, exits status 4.
-const PROG_B: [u8; 0x18] = [
-    0xf3, 0xff, 0x9f, 0xd2, // movz x19, #0xffff
-    0xf3, 0xff, 0xbf, 0xf2, // movk x19, #0xffff, lsl #16
-    0x73, 0x06, 0x00, 0xf1, // b_loop: subs x19, x19, #1
-    0xe1, 0xff, 0xff, 0x54, // b.ne b_loop
+const PROG_B: [u8; 0x24] = [
     0x88, 0x00, 0x80, 0xd2, // mov x8, #4
+    0x00, 0xe0, 0x3b, 0xd5, // mrs x0, cntfrq_el0
+    0x00, 0xfc, 0x41, 0xd3, // lsr x0, x0, #1
+    0x21, 0xe0, 0x3b, 0xd5, // mrs x1, cntpct_el0
+    0x24, 0x00, 0x00, 0x8b, // add x4, x1, x0
+    0x22, 0xe0, 0x3b, 0xd5, // b_loop: mrs x2, cntpct_el0
+    0x5f, 0x00, 0x04, 0xeb, // cmp x2, x4
+    0xcb, 0xff, 0xff, 0x54, // b.lt b_loop
     0x01, 0x00, 0x00, 0xd4, // svc #0
 ];
 

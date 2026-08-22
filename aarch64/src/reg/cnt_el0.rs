@@ -3,7 +3,7 @@ use core::fmt;
 use aarch64_cpu::asm::barrier;
 #[cfg(not(test))]
 use aarch64_cpu::registers::{CNTFRQ_EL0, CNTPCT_EL0};
-use aarch64_cpu::registers::{CNTP_CTL_EL0, CNTP_CVAL_EL0, Readable, Writeable};
+use aarch64_cpu::registers::{CNTKCTL_EL1, CNTP_CTL_EL0, CNTP_CVAL_EL0, Readable, Writeable};
 use bitstruct::bitstruct;
 
 // CNTPCT_EL0 — 64-bit physical counter
@@ -79,6 +79,58 @@ impl CntFrqEl0 {
 impl fmt::Debug for CntFrqEl0 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CntFrqEl0").field("hz", &format_args!("{}", self.0)).finish()
+    }
+}
+
+// CNTKCTL_EL1 — counter-timer control: which counter registers EL0
+// may access.  Reset value is 0, which traps EL0 reads of CNTPCT_EL0
+// and CNTFRQ_EL0, so a process cannot pace itself against the real
+// clock without the kernel opting in.  The only bits the kernel sets
+// are the two EL0 counter enables below; EL0 access to the timer
+// (EL0TEN, EL0PTEN) stays trapped, as it must.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct CntKctlEl1(u64);
+
+// Defaults to 0, i.e. "the kernel never opted EL0 in".  Unconditional
+// (unlike the counter/frequency mocks above): `write` records into it
+// under `cfg!(test)`, a runtime check whose code path compiles in both
+// builds.
+static MOCK_KCTL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub fn set_mock_kctl(value: u64) {
+    MOCK_KCTL.store(value, core::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub fn mock_kctl() -> u64 {
+    MOCK_KCTL.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+impl CntKctlEl1 {
+    // EL0PCTEN (bit 0): EL0 may read CNTPCT_EL0.
+    // EL0PCNTEN (bit 1): EL0 may read CNTFRQ_EL0.
+    pub const fn el0_counter_access() -> Self {
+        Self(0b11)
+    }
+
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
+
+    pub fn write(self) {
+        if cfg!(test) {
+            // Record the last write so a host test can assert what the
+            // kernel opted EL0 into.
+            MOCK_KCTL.store(self.0, core::sync::atomic::Ordering::Relaxed);
+        } else {
+            CNTKCTL_EL1.set(self.0);
+            // The architectural effect of the write is visible to EL0
+            // only after a context synchronisation event; an ISB here
+            // keeps the opt-in self-contained, matching the other
+            // writes in this file.
+            barrier::isb(barrier::SY);
+        }
     }
 }
 
