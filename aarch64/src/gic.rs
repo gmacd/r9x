@@ -43,9 +43,29 @@ const GICC_EOIR: usize = 0x0010;
 const GICC_IIDR: usize = 0x00fc; // CPU Interface Identification Register
 
 const GICD_CTLR: usize = 0x0000;
+// The GICv2 map is not the GICv3 one: priority sits at 0x400, not
+// 0x000, and 0x000-0x0fc is CTLR/TYPER/IGROUPR, not priority.
+const GICD_IPRIORITYR: usize = 0x0400; // Priority registers (0x400-0x7fc)
 const GICD_ISENABLER: usize = 0x0100; // Set-enable registers (0x100-0x17c)
 const GICD_ICENABLER: usize = 0x0180; // Clear-enable registers (0x180-0x1fc)
+const GICD_ICPENDR: usize = 0x0280; // Clear-pending registers (0x280-0x2fc)
 const GICD_ICACTIVER: usize = 0x0380; // Clear-active registers (0x380-0x3fc)
+
+// The GICv2 INTID space is 32 blocks of 32 INTIDs.  The enable, pending
+// and active registers are one 32-bit word per block; the priority
+// registers hold four INTIDs per word, so 256 words cover the same
+// space.
+const GICD_INTID_BLOCKS: usize = 32;
+const GICD_PRIORITY_WORDS: usize = GICD_INTID_BLOCKS * 8;
+
+// The priority the kernel gives every INTID it programs: 0xa0, Linux's
+// GICD_INT_DEF_PRI (include/linux/irqchip/arm-gic-common.h).  An
+// interrupt forwards only when its priority is numerically lower than
+// the core's PMR, so 0xa0 is admitted by init_cpu's PMR of 0xff while
+// leaving the higher half of the space for interrupts that must
+// pre-empt the default.
+const DEFAULT_PRIORITY: u32 = 0xa0;
+const DEFAULT_PRIORITY_WORD: u32 = DEFAULT_PRIORITY * 0x0101_0101;
 
 // GICC_CTLR[8:5] are the FIQ/IRQ bypass-disable bits.  Their value is
 // established by firmware and is live on parts that wire the legacy
@@ -300,10 +320,38 @@ impl Gic {
         Ok(Gic { gicc_virtrange, gicd_virtrange, timer_intid })
     }
 
-    /// System-wide bringup: enable the distributor.  Run once, on the
-    /// boot core.  Everything else the GIC needs is per-core — see
-    /// `init_cpu`.
+    /// System-wide bringup: establish every part of the distributor's
+    /// state, then enable it.  Run once, on the boot core; the per-core
+    /// half is `init_cpu`.
+    ///
+    /// The boot firmware has already run against this distributor, and
+    /// its state is a claim, not truth: an interrupt left enabled
+    /// arrives with no handler, one left pending is armed to fire the
+    /// moment anything re-enables it, and one left at priority 0xff is
+    /// never forwarded to a core running PMR 0xff — it cannot fire and
+    /// nothing explains why.  The sweeps therefore cover the whole
+    /// INTID space, trusting nothing inherited; Linux follows the same
+    /// policy in gic_dist_init (drivers/irqchip/irq-gic.c).  The
+    /// INTID 0..31 registers are banked per core on GICv2, so the
+    /// sweeps here reach only the boot core's bank; `init_cpu`
+    /// re-establishes the banked half on every core.
     fn init_distributor(&self) {
+        // Disable every INTID.
+        for block in 0..GICD_INTID_BLOCKS {
+            write_reg(&self.gicd_virtrange, GICD_ICENABLER + 4 * block, !0);
+        }
+        // Clear every pending bit.
+        for block in 0..GICD_INTID_BLOCKS {
+            write_reg(&self.gicd_virtrange, GICD_ICPENDR + 4 * block, !0);
+        }
+        // Program the default priority for every INTID.
+        for word in 0..GICD_PRIORITY_WORDS {
+            write_reg(
+                &self.gicd_virtrange,
+                GICD_IPRIORITYR + 4 * word,
+                DEFAULT_PRIORITY_WORD,
+            );
+        }
         write_reg(&self.gicd_virtrange, GICD_CTLR, GicdCtlr(0).with_enable(true).into());
     }
 
@@ -326,6 +374,16 @@ impl Gic {
         // gic_cpu_config(), drivers/irqchip/irq-gic-common.c.)
         write_reg(&self.gicd_virtrange, GICD_ICACTIVER, !0);
         write_reg(&self.gicd_virtrange, GICD_ICENABLER, !0);
+        // The priority registers for INTIDs 0..31 are banked per core,
+        // so this core programs its own bank — the distributor's sweep
+        // reached only the boot core's.  A timer PPI left at 0xff by
+        // firmware is numerically equal to the PMR about to be set and
+        // is never forwarded, with nothing to say why.  Linux writes
+        // the same default per core in gic_cpu_config()
+        // (drivers/irqchip/irq-gic-common.c).
+        for word in 0..(GICD_INTID_BLOCKS / 4) {
+            write_reg(&self.gicd_virtrange, GICD_IPRIORITYR + 4 * word, DEFAULT_PRIORITY_WORD);
+        }
         // Admit all priorities (lower value = higher priority; 0xff is
         // the lowest threshold, masking nothing).
         write_reg(&self.gicc_virtrange, GICC_PMR, GiccPmr(0).with_priority(0xff).into());
