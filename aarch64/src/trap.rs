@@ -228,7 +228,7 @@ fn trap(frame: &mut TrapFrame) {
         // This is valid on an IRQ vector and should be a no-op.
         if let Some(iar) = iar {
             let intid = iar.int_id();
-            if intid == gic::timer_intid() {
+            if intid == timer::intid() {
                 timer::interrupt_handler();
             } else {
                 iprintln!("Unhandled GIC IRQ {intid}");

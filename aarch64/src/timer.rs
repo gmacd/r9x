@@ -4,14 +4,22 @@
 //! references in a small fixed table, never allocates, and the
 //! interrupt handler frees nothing.  Timers therefore live in statics,
 //! with interior mutability making them shareable with the handler.
+//!
+//! The PPI's INTID is not a constant: it is parsed from the devicetree
+//! at init (`timer_intid_from_dt`), because the number is a property of
+//! the machine's interrupt wiring, not of the kernel.
 
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 
+use port::Result;
+use port::fdt::DeviceTree;
 use port::irq::IrqGuard;
 use port::mcslock::{Lock, LockNode};
+use port::once::Once;
 
+use crate::gic;
 use crate::reg::cnt_el0::{CntFrqEl0, CntKctlEl1, CntPctEl0, CntpCtlEl0, CntpCvalEl0};
 
 /// Fired in interrupt context.  Return true to keep a periodic timer
@@ -147,7 +155,97 @@ fn arm_hardware() {
     }
 }
 
-pub fn init() {
+/// The INTID of the timer PPI on this machine, published by `init`
+/// from the devicetree (`timer_intid_from_dt`).  IRQs are masked until
+/// after init, so the first read is always after the publish.
+static INTID: Once<u16> = Once::new();
+
+/// The INTID of the timer PPI on this machine.
+pub fn intid() -> u16 {
+    *INTID.get().expect("timer: not initialised")
+}
+
+/// Parse the INTID of the EL1 non-secure physical timer PPI from the
+/// devicetree.
+///
+/// The generic-timer PPIs sit at the low end of the PPI range by Arm
+/// Base System Architecture convention (SBSA; the GIC-400 TRM agrees):
+/// INTID 26 = non-secure EL2 physical, 27 = virtual (CNTV), 28 = EL2
+/// virtual (VHE), 29 = secure EL1 physical (CNTPS), 30 = non-secure
+/// EL1 physical (CNTP); DT PPI numbers map to INTIDs as 16 + n.  The
+/// convention — not the architecture — is what makes the number a
+/// property of the machine's wiring, which is why it is parsed rather
+/// than assumed.  The `arm,armv8-timer` node's `interrupts` list is a
+/// series of (type, PPI, flags) triplets ordered [0] EL1 secure
+/// physical, [1] EL1 non-secure physical, [2] EL1 virtual, [3] EL2
+/// physical (`arm,arch_timer.yaml`).  r9 guarantees non-secure EL1
+/// handoff on every supported target (QEMU `virt` boots a 64-bit guest
+/// at EL1 non-secure; the BCM firmware hands the OS off at EL1
+/// non-secure) and arms the CNTP, so it takes entry [1].
+///
+/// The positional read of entry [1] assumes the secure entry occupies
+/// [0]; a list that names its entries (`interrupt-names`, used by some
+/// hypervisor-generated DTs) is a different convention and is refused
+/// rather than guessed at.
+///
+/// Verified on both supported machines: QEMU virt (live DTB) and
+/// bcm2711 (Pi 4) list PPI 14 at entry [1] — INTID 30 — and on QEMU
+/// virt arming CNTP in fact delivers INTID 30.
+///
+/// A board whose timer node is `arm,armv7-timer` parented to a local
+/// interrupt controller (the Pi 3's bcm2837: its timer PPIs are
+/// local-intc IRQs, not GIC PPIs) has no `arm,armv8-timer` node and
+/// fails here.  That is the loud way to say the board is out of scope.
+fn timer_intid_from_dt(dt: &DeviceTree) -> Result<u16> {
+    let node = dt.find_compatible("arm,armv8-timer").next().ok_or(
+        "no arm,armv8-timer node in devicetree: the timer PPI is not GIC-routed (on the Pi 3's bcm2837 it goes through the local interrupt controller, which is not supported)",
+    )?;
+    if dt.property(&node, "interrupt-names").is_some() {
+        return Err(
+            "arm,armv8-timer node has interrupt-names; r9 takes the positional entry [1] and does not parse named lists",
+        );
+    }
+    let prop = dt
+        .property(&node, "interrupts")
+        .ok_or("arm,armv8-timer node has no interrupts property")?;
+    let cells = dt.property_value_as_u32_iter(&prop);
+    // Entry [1]'s PPI is the 5th cell: triplet [0] is cells 0-2,
+    // triplet [1] is cells 3-5, the PPI is cell 4.  Cell 3 must be the
+    // GIC_PPI type (1); anything else means the specifiers are not the
+    // 3-cell GIC form this positional read assumes.
+    let mut ppi = None;
+    for (i, cell) in cells.enumerate() {
+        match i {
+            3 => {
+                if cell != 1 {
+                    return Err("arm,armv8-timer interrupts entry [1] is not a GIC PPI specifier");
+                }
+            }
+            4 => ppi = Some(cell),
+            _ => {}
+        }
+    }
+    let ppi =
+        ppi.ok_or("arm,armv8-timer interrupts list is too short for the non-secure EL1 PPI")?;
+    if ppi > 15 {
+        return Err("arm,armv8-timer interrupts entry [1] is not a local PPI number");
+    }
+    // ppi <= 15, so 16 + ppi fits a u16.
+    Ok(16 + ppi as u16)
+}
+
+/// Initialise the timer subsystem.  Requires `gic::init`: delivery of
+/// the PPI is enabled at the distributor as the last step, and only
+/// after the hardware is disarmed, so an inherited armed timer cannot
+/// be admitted pending.
+pub fn init(dt: &DeviceTree) {
+    let intid = timer_intid_from_dt(dt).unwrap_or_else(|msg| {
+        panic!("timer: {msg:?}: refusing to boot without a GIC-routed timer")
+    });
+    let Ok(intid) = INTID.set(intid) else {
+        panic!("timer: initialised twice");
+    };
+
     // duration_to_ticks re-checks this on every start; checking here
     // too fails at boot rather than at the first timer.
     if CntFrqEl0::read().freq() == 0 {
@@ -161,6 +259,7 @@ pub fn init() {
     CntKctlEl1::el0_counter_access().write();
 
     timer_disable();
+    gic::enable_interrupt(*intid);
 }
 
 fn now() -> u64 {
@@ -224,7 +323,12 @@ pub fn interrupt_handler() {
 mod tests {
     use super::*;
     use crate::reg::cnt_el0::{mock_kctl, set_mock_count, set_mock_freq, set_mock_kctl};
+    use port::fdt::DeviceTree;
     use std::sync::{Mutex, MutexGuard};
+
+    /// The Pi 4's DTB — the same file the aarch64 QEMU run uses —
+    /// carries the `arm,armv8-timer` node `init` parses.
+    static RPI4_DTB: &[u8] = include_bytes!("../lib/bcm2711-rpi-4-b.dtb");
 
     // The tests drive the real start/cancel/interrupt_handler paths
     // (IrqGuard is a no-op on hosted builds), so they share the global
@@ -384,10 +488,13 @@ mod tests {
     }
 
     #[test]
-    fn init_opted_el0_into_the_counter() {
+    fn init_parses_the_timer_intid_and_opts_el0_into_the_counter() {
         let _guard = reset(FREQ_1MS_PER_TICK);
         assert_eq!(mock_kctl(), 0, "reset clears the opt-in");
-        init();
+        let dt = DeviceTree::new(RPI4_DTB).unwrap();
+        init(&dt);
+        // The Pi 4's DTB lists PPI 14 at entry [1]: INTID 30.
+        assert_eq!(intid(), 30);
         assert_eq!(
             mock_kctl(),
             CntKctlEl1::el0_counter_access().bits(),

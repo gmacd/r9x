@@ -102,12 +102,12 @@ pub extern "C" fn main9(dtb_va: usize) {
     mailbox::init(&dt);
 
     // Interrupt bringup, in a required order:
-    //   1. timer::init disarms CNTP_CTL_EL0 before the GIC enables the
-    //      timer PPI, so a firmware-armed timer cannot fire into a
-    //      half-built handler.
-    //   2. gic::init enables the distributor and this core's CPU
+    //   1. gic::init enables the distributor and this core's CPU
     //      interface.  boot::irq_ops (above, before the MMU work) must
     //      already have registered the DAIF ops IrqGuard needs.
+    //   2. timer::init disarms CNTP_CTL_EL0 and only then enables the
+    //      timer PPI at the distributor, so a firmware-armed timer
+    //      cannot be admitted pending into a half-built handler.
     //   3. IRQs are unmasked last.  Both inits panic on failure, so an
     //      unmask here means a driver is published: an interrupt
     //      asserted by a prior boot stage is taken and acknowledged,
