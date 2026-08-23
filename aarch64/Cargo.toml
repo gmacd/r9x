@@ -73,5 +73,10 @@ name = "allocate"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "prio"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true

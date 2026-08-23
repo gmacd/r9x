@@ -121,7 +121,72 @@ unsafe impl Sync for Kstacks {}
 static KSTACKS: Kstacks =
     Kstacks { stacks: core::cell::UnsafeCell::new([[0u8; KSTACK_SZ]; NPROCS]) };
 
-#[cfg(target_os = "none")]
+/// A process's scheduling priority.  A small fixed set, not an unbounded
+/// int: illegal values are unrepresentable and the compare is a plain enum
+/// order.  Higher orders run first; ties round-robin (see `pick_next`).
+#[cfg(any(target_os = "none", test))]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Priority {
+    /// User processes; the default for a new `spawn` and the floor.
+    User,
+    /// Kernel work — the kernel context and the scheduling tick — which
+    /// must run ahead of user.  The ceiling, and the target of a PI
+    /// `boost`.
+    Kernel,
+}
+
+/// The priority a new user process starts at.
+#[cfg(any(target_os = "none", test))]
+pub const DEFAULT_PRIORITY: Priority = Priority::User;
+
+/// A slot's priority state: its own (`base`) priority and the priority it
+/// currently runs at (`effective`).  `effective` exceeds `base` only while
+/// the slot is boosted (priority inheritance).
+#[cfg(any(target_os = "none", test))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PriorityState {
+    base: Priority,
+    effective: Priority,
+}
+
+#[cfg(any(target_os = "none", test))]
+impl PriorityState {
+    /// A process at its own `base` priority, not boosted.
+    pub const fn new(base: Priority) -> Self {
+        Self { base, effective: base }
+    }
+
+    /// The priority the slot is currently scheduled at.
+    pub fn effective(&self) -> Priority {
+        self.effective
+    }
+
+    /// True while the slot's effective priority is raised above its base.
+    /// `>`, not `!=`, so a call that (incorrectly) sets `effective` below
+    /// `base` is never reported as boosted: boosted means raised, full
+    /// stop.
+    pub fn is_boosted(&self) -> bool {
+        self.effective > self.base
+    }
+
+    /// Raise the effective priority to `to`, remembering `base`.  `to` is
+    /// at or above `base` (a priority-inheritance raise).  PI is at most
+    /// once per slot (no stacking): a `boost` of an already-boosted slot is
+    /// a no-op, so a holder keeps its first boost until `unboost`.
+    pub fn boost(&mut self, to: Priority) {
+        if !self.is_boosted() {
+            self.effective = to;
+        }
+    }
+
+    /// Restore the effective priority to `base`.  A no-op when not boosted
+    /// (already at base).
+    pub fn unboost(&mut self) {
+        self.effective = self.base;
+    }
+}
+
+#[cfg(any(target_os = "none", test))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     /// On CPU.  At most one process at a time, this arc.
@@ -146,6 +211,9 @@ struct Process {
     kstack: *const u8,
     /// Valid once `state == Exited`.
     exit_status: u64,
+    /// The slot's priority and its effective (possibly boosted) priority.
+    /// Touched only under the table lock (module docs).
+    prio: PriorityState,
 }
 
 /// One optional process per slot, all empty.  Spelled out rather than
@@ -162,6 +230,34 @@ static TABLE: Lock<[Option<Process>; NPROCS]> = Lock::new("proc", EMPTY_TABLE);
 #[cfg(target_os = "none")]
 static CURSOR: AtomicUsize = AtomicUsize::new(0);
 
+/// Pick the next slot to run: the highest-priority Runnable other than
+/// `current`, and among the ties at that priority the first one after
+/// `cursor`, wrapping (round-robin nested under priority).  Pure over a
+/// slice of per-slot `(state, effective priority)` so it is host-testable
+/// without the `target_os = "none"` process representation.  An empty table
+/// slot is passed as `State::Exited`, which is never picked.
+#[cfg(any(target_os = "none", test))]
+fn pick_next(slots: &[(State, Priority)], current: usize, cursor: usize) -> Option<usize> {
+    let n = slots.len();
+    // The highest effective priority among the Runnable slots other than
+    // the current one; nothing else Runnable is `None`.
+    let best = (0..n)
+        .filter(|&i| i != current)
+        .filter(|&i| slots[i].0 == State::Runnable)
+        .map(|i| slots[i].1)
+        .max()?;
+    // Among the ties at that priority, round-robin from just after the
+    // cursor: the existing fairness, nested under priority rather than
+    // replaced.
+    for off in 1..=n {
+        let i = (cursor + off) % n;
+        if i != current && slots[i].0 == State::Runnable && slots[i].1 == best {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// The address of the saved kernel starter context that `run_all`'s
 /// first `swtch` fills in: the successor of the single-process arc's
 /// kernel slot.  Set and read only in IRQ-masked kernel context this
@@ -172,6 +268,56 @@ static mut STARTER_CTX: *mut Context = core::ptr::null_mut();
 #[cfg(target_os = "none")]
 fn starter_ctx_addr() -> *mut *mut Context {
     core::ptr::addr_of_mut!(STARTER_CTX)
+}
+
+/// The switch-in order trace, recorded so a qemu-test image can assert
+/// scheduling order (this task's priority/boost assertions read it).  A
+/// bound of 64 covers the test images' short runs.  The write happens in
+/// the selection path (a per-switch hot path), but only in qemu-test
+/// builds; in production builds `record_run` compiles out to nothing, so
+/// the trace is not a production cost.
+#[cfg(all(target_os = "none", feature = "qemu-test"))]
+const RUN_ORDER_MAX: usize = 64;
+#[cfg(all(target_os = "none", feature = "qemu-test"))]
+struct RunOrder {
+    ids: core::cell::UnsafeCell<[usize; RUN_ORDER_MAX]>,
+    len: core::cell::UnsafeCell<usize>,
+}
+// SAFETY: every write is under the table lock (the selection path) and the
+// only reader runs after `run_all` returns (the table is then empty, so no
+// further writes); single-core this arc.
+#[cfg(all(target_os = "none", feature = "qemu-test"))]
+unsafe impl Sync for RunOrder {}
+#[cfg(all(target_os = "none", feature = "qemu-test"))]
+static RUN_ORDER: RunOrder = RunOrder {
+    ids: core::cell::UnsafeCell::new([0usize; RUN_ORDER_MAX]),
+    len: core::cell::UnsafeCell::new(0),
+};
+
+/// Record a slot's switch-in in the run-order trace.  Present in every
+/// bare-metal build; the recording is a no-op outside qemu-test images.
+#[cfg(all(target_os = "none", feature = "qemu-test"))]
+fn record_run(id: usize) {
+    let len = unsafe { *RUN_ORDER.len.get() };
+    if len < RUN_ORDER_MAX {
+        unsafe {
+            (*RUN_ORDER.ids.get())[len] = id;
+            *RUN_ORDER.len.get() = len + 1;
+        }
+    }
+}
+#[cfg(all(target_os = "none", not(feature = "qemu-test")))]
+fn record_run(_id: usize) {}
+
+/// The order in which slots were switched in, up to the bound: the
+/// qemu-test images assert scheduling order from this.
+#[cfg(all(target_os = "none", feature = "qemu-test"))]
+pub fn run_order() -> &'static [usize] {
+    let len = unsafe { *RUN_ORDER.len.get() };
+    unsafe {
+        let ids = &*RUN_ORDER.ids.get();
+        &ids[..len]
+    }
 }
 
 /// The preemption tick: every 100 ms the timer fires, `Tick` sets the
@@ -343,7 +489,13 @@ pub fn spawn(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     };
     let kstack = unsafe { KSTACKS.stacks.get().cast::<u8>().add(id * KSTACK_SZ) };
     let context = forkret_context(id, text_va, stack_va);
-    let proc = Process { state: State::Runnable, context, kstack, exit_status: 0 };
+    let proc = Process {
+        state: State::Runnable,
+        context,
+        kstack,
+        exit_status: 0,
+        prio: PriorityState::new(DEFAULT_PRIORITY),
+    };
     table[id] = Some(proc);
     id
 }
@@ -444,6 +596,7 @@ pub fn run_all() {
         let mut table = table;
         let Some(p) = table[id].as_mut() else { unreachable!() };
         p.state = State::Running;
+        record_run(id);
         p as *mut Process
     };
     let starter = starter_ctx_addr();
@@ -465,6 +618,44 @@ pub fn status(id: ProcessId) -> Option<u64> {
         Some(Some(p)) if p.state == State::Exited => Some(p.exit_status),
         _ => None,
     }
+}
+
+/// Raise the effective priority of `id` to `to` (at or above its base),
+/// remembering its base so `unboost` can restore it.  This is the hook a
+/// blocking wait will use to hand a waiter's priority to the resource it is
+/// held on (priority inheritance); stage 2 fires it on a blocking send,
+/// passing the waiter's own priority as `to`.  PI is at most once per slot:
+/// re-boosting a boosted slot is a no-op (see `PriorityState`).  A no-op if
+/// `id` is not a live slot.
+#[cfg(target_os = "none")]
+pub fn boost(id: ProcessId, to: Priority) {
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    if let Some(Some(p)) = table.get_mut(id) {
+        p.prio.boost(to);
+    }
+}
+
+/// Restore `id`'s effective priority to its base.  The inverse of
+/// `boost`; a no-op if `id` is not a live slot or is not boosted.
+#[cfg(target_os = "none")]
+pub fn unboost(id: ProcessId) {
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    if let Some(Some(p)) = table.get_mut(id) {
+        p.prio.unboost();
+    }
+}
+
+/// The effective priority a slot currently runs at, if it is a live slot.
+/// The read half of the boost/`unboost` capability: a qemu-test image
+/// confirms a boost took effect through it, and stage 2's IPC reads
+/// inherited priorities from it.
+#[cfg(target_os = "none")]
+pub fn effective_priority(id: ProcessId) -> Option<Priority> {
+    let node = LockNode::new();
+    let table = TABLE.lock(&node);
+    table.get(id).and_then(|s| s.as_ref()).map(|p| p.prio.effective())
 }
 
 // The narrow seam for trap.rs: the two things an EL0 svc can do to the
@@ -585,20 +776,15 @@ fn resched() -> bool {
             demoted = true;
         }
 
-        // Scan from the cursor for a Runnable other than the current,
-        // wrapping.
-        let mut scan = CURSOR.load(Ordering::Relaxed);
-        let mut next_id: Option<usize> = None;
-        for _ in 0..NPROCS {
-            scan = (scan + 1) % NPROCS;
-            if let Some(p) = &table[scan]
-                && p.state == State::Runnable
-                && scan != current_id
-            {
-                next_id = Some(scan);
-                break;
-            }
-        }
+        // Selection is by highest effective priority, then round-robin
+        // within the winning class: build the per-slot (state, priority)
+        // view and let pick_next choose.  An empty slot reads Exited and
+        // is never picked.
+        let slots: [(State, Priority); NPROCS] = core::array::from_fn(|i| match &table[i] {
+            Some(p) => (p.state, p.prio.effective()),
+            None => (State::Exited, Priority::User),
+        });
+        let next_id = pick_next(&slots, current_id, CURSOR.load(Ordering::Relaxed));
 
         match next_id {
             None => {
@@ -615,6 +801,7 @@ fn resched() -> bool {
                 let Some(p) = table[nid].as_mut() else { unreachable!() };
                 p.state = State::Running;
                 CURSOR.store(nid, Ordering::Relaxed);
+                record_run(nid);
                 (current, Some(p as *mut Process))
             }
         }
@@ -680,4 +867,95 @@ pub(crate) fn irq_resched() {}
 #[cfg(not(target_os = "none"))]
 pub fn preemptions() -> u64 {
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(state: State, prio: Priority) -> (State, Priority) {
+        (state, prio)
+    }
+
+    #[test]
+    fn picks_the_highest_priority_runnable() {
+        // Slot 0 empty, 1 a User (current), 2 a Kernel, 3 a User.  The
+        // Kernel at 2 beats the User at 3.
+        let slots = [
+            s(State::Exited, Priority::User),
+            s(State::Runnable, Priority::User),
+            s(State::Runnable, Priority::Kernel),
+            s(State::Runnable, Priority::User),
+        ];
+        assert_eq!(pick_next(&slots, 1, 1), Some(2));
+    }
+
+    #[test]
+    fn same_priority_round_robin_from_cursor() {
+        // Three User processes: the pick rotates with the cursor.
+        let slots = [s(State::Runnable, Priority::User); 3];
+        assert_eq!(pick_next(&slots, 0, 0), Some(1));
+        assert_eq!(pick_next(&slots, 1, 1), Some(2));
+        assert_eq!(pick_next(&slots, 2, 2), Some(0));
+    }
+
+    #[test]
+    fn boost_raises_and_unboost_restores() {
+        let mut p = PriorityState::new(Priority::User);
+        assert_eq!(p.effective(), Priority::User);
+        assert!(!p.is_boosted());
+        p.boost(Priority::Kernel);
+        assert_eq!(p.effective(), Priority::Kernel);
+        assert!(p.is_boosted());
+        p.unboost();
+        assert_eq!(p.effective(), Priority::User);
+        assert!(!p.is_boosted());
+    }
+
+    #[test]
+    fn boosted_sorts_above_peers_and_drops_back() {
+        // Slot 0 a User peer, slot 1 boosted to Kernel.  While boosted,
+        // slot 1 is picked for its priority whatever the cursor is.
+        let boosted = [s(State::Runnable, Priority::User), s(State::Runnable, Priority::Kernel)];
+        assert_eq!(pick_next(&boosted, 2, 0), Some(1));
+        assert_eq!(pick_next(&boosted, 2, 1), Some(1));
+        // Once unboosted the two are tied: the pick follows the cursor
+        // (round-robin), not slot 1's former privilege — cursor past the
+        // peer serves the peer.
+        let unboosted = [s(State::Runnable, Priority::User), s(State::Runnable, Priority::User)];
+        assert_eq!(pick_next(&unboosted, 2, 0), Some(1));
+        assert_eq!(pick_next(&unboosted, 2, 1), Some(0));
+    }
+
+    #[test]
+    fn reboost_is_a_no_op() {
+        let mut p = PriorityState::new(Priority::User);
+        p.boost(Priority::Kernel);
+        // A second boost, even to a different value, does not restack.
+        p.boost(Priority::User);
+        assert_eq!(p.effective(), Priority::Kernel);
+        p.unboost();
+        assert_eq!(p.effective(), Priority::User);
+    }
+
+    #[test]
+    fn current_is_never_reselected() {
+        // Only the current slot is Runnable; it must not be reselected.
+        let slots = [s(State::Runnable, Priority::Kernel), s(State::Exited, Priority::User)];
+        assert_eq!(pick_next(&slots, 0, 0), None);
+    }
+
+    #[test]
+    fn running_is_not_selectable() {
+        // A Running slot other than the current is on CPU, not Runnable:
+        // it is not picked even at a higher priority.
+        let slots = [
+            s(State::Running, Priority::Kernel),
+            s(State::Runnable, Priority::User),
+            s(State::Exited, Priority::User),
+        ];
+        // current is the Exited slot (the kernel); the Running Kernel at 0
+        // must not be picked — the Runnable User at 1 is.
+        assert_eq!(pick_next(&slots, 2, 2), Some(1));
+    }
 }
