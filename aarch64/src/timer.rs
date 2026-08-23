@@ -146,6 +146,17 @@ fn register(timer: &'static Timer) -> Result<()> {
 
 /// Arm the hardware for the earliest active deadline, or disarm if
 /// there is none.  Call with IRQs masked.
+///
+/// `TIMERS` is one table shared by every core, but `CNTP_CVAL_EL0` has a
+/// separate copy in each PE (Arm ARM DDI 0487, CNTP_CVAL_EL0): each core
+/// writes its own, so after any second core has run this, every core holds
+/// the same global minimum deadline in its own CVAL, and each core's timer
+/// fires its own PPI when that deadline is reached.  `now` is not banked
+/// (CNTPCT_EL0 is one global count), so every core compares the same
+/// deadline against the same time and all of them see the expiry as due.
+/// Per-core CVALs are the architecture, not an oversight
+/// (gic-timer-review-nits.md #6 asked for this to be written down; it is
+/// now).
 fn arm_hardware() {
     let timers = with_timers(|timers| *timers);
     let next = timers
@@ -303,23 +314,42 @@ pub fn interrupt_handler() {
         if deadline > now {
             continue;
         }
+        // The due-check is a claim, not a load: once two cores each arm
+        // their banked CVAL to the global minimum (see `arm_hardware`),
+        // both take the PPI at the same expiry and both see it as due.  The
+        // re-arm in step 3 runs on every core and deasserts each one's own
+        // PPI, so only the *fire* must be singular: exactly one core claims
+        // the expiry and fires, the rest skip.  One expiry thus yields one
+        // `fire()` and one deadline advance.
         if !timer.repeat {
-            // Deactivate before firing so the callback may restart it.
-            timer.active.store(false, Ordering::Release);
-            timer.callback.fire();
-        } else if timer.callback.fire() {
-            // Advance the deadline; if the callback cancelled its own
-            // timer the cleared active flag still stops it.
-            // If the callback ran longer than the period, advance the
-            // deadline repeatedly until it is in the future to avoid
-            // an interrupt storm.  `start` guarantees a periodic
-            // timer's period is at least one tick, so the division is
-            // safe.
+            // A one-shot claims by clearing `active`: the core whose swap
+            // finds it set owns the fire.  Clearing before firing also
+            // lets the callback restart the timer.
+            if timer.active.swap(false, Ordering::AcqRel) {
+                timer.callback.fire();
+            }
+        } else {
+            // A periodic timer claims by advancing the deadline: the core
+            // whose compare-exchange lands owns the fire, and the loser
+            // sees a deadline in the future and skips.  `next` is the
+            // clamp, computed from the *claimed* deadline (the value the
+            // exchange succeeded on), never a stale separately-loaded one.
+            // If the callback ran longer than a period the clamp skips the
+            // missed expiries rather than re-firing in a storm.  `start`
+            // guarantees a periodic period is at least one tick, so the
+            // division is safe.
             let period = timer.period_ticks.load(Ordering::Relaxed);
             let next = deadline + ((now - deadline) / period + 1) * period;
-            timer.deadline_ticks.store(next, Ordering::Relaxed);
-        } else {
-            timer.active.store(false, Ordering::Release);
+            let claimed = timer
+                .deadline_ticks
+                .compare_exchange(deadline, next, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok();
+            if !claimed {
+                continue;
+            }
+            if !timer.callback.fire() {
+                timer.active.store(false, Ordering::Release);
+            }
         }
     }
 
