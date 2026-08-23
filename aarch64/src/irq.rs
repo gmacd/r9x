@@ -2,7 +2,7 @@
 
 use port::irq::IrqOps;
 
-static IRQ_OPS: IrqOps = IrqOps { mask: mask_irqs, restore: restore_irqs };
+static IRQ_OPS: IrqOps = IrqOps { mask: mask_irqs, restore: restore_irqs, core_id: current_core };
 
 /// The I bit of DAIF: set masks IRQs on the core.
 #[cfg(test)]
@@ -83,6 +83,31 @@ fn restore_irqs(daif: u64) {
 #[cfg(test)]
 fn restore_irqs(daif: u64) {
     MOCK_DAIF.store(daif, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The calling core's id: MPIDR_EL1 Aff0, the core-within-cluster id
+/// (bits [7:0]; Arm ARM DDI 0487, MPIDR_EL1) — the same field `l.S` masks to
+/// decide whether to run at all.  Aff0 is a unique core index only on
+/// single-cluster targets; every supported target (Pi 4, QEMU `q35`/`virt`)
+/// is single-cluster with fewer cores than `port::irq::MAX_CPUS`, so this is
+/// a valid depth-table index.  A multi-cluster target would need Aff0 + Aff1;
+/// none is supported, so that is refused here, not guessed at.
+#[cfg(not(test))]
+fn current_core() -> usize {
+    let mpidr: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {0}, mpidr_el1",
+            out(reg) mpidr,
+            options(nostack, preserves_flags)
+        );
+    }
+    (mpidr & 0xff) as usize
+}
+
+#[cfg(test)]
+fn current_core() -> usize {
+    0
 }
 
 #[cfg(test)]

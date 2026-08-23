@@ -21,31 +21,87 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::once::Once;
 
-// Depth rather than a flag so nested exceptions stay counted.
-// Core-local in spirit; needs to become per-core state under SMP.
-static INTERRUPT_DEPTH: AtomicUsize = AtomicUsize::new(0);
+/// Upper bound on the cores the kernel supports.  The interrupt-depth
+/// table is sized to it, and every arch's `core_id` hook must return an index
+/// below it.  All current targets (Pi 4: 4 cores; QEMU `q35` and `virt`) fit
+/// with headroom; raising this is the one-line change if a target with more
+/// cores lands.
+const MAX_CPUS: usize = 16;
 
-/// Mark entry to interrupt context.  Called by the arch trap handler.
+// Depth rather than a flag, so nested exceptions stay counted.  Per core: the
+// table answers "is *this* core in interrupt context", so a trap on one core
+// must not read as interrupt context on another — the whole reason it is a
+// table and not a single counter.  `core()` supplies the index.
+// `AtomicUsize` is `!Copy`, so the table cannot be written with a `[x; N]`
+// repeat (and `array::from_fn` is not yet const-stable); it is written out
+// element-wise instead.
+static INTERRUPT_DEPTH: [AtomicUsize; MAX_CPUS] = [
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+];
+
+/// The calling core's index into `INTERRUPT_DEPTH`, from the arch's `core_id`
+/// hook.  Zero when no hook is registered (hosted tests, and arches that do
+/// not yet track per-core interrupt depth) — the correct answer for a single
+/// boot core.
+fn core() -> usize {
+    let c = ops().map(|o| (o.core_id)()).unwrap_or(0);
+    debug_assert!(c < MAX_CPUS, "core_id {} exceeds MAX_CPUS", c);
+    c
+}
+
+/// Mark entry to interrupt context on the calling core.  Called by the arch
+/// trap handler.
 pub fn enter_interrupt() {
-    INTERRUPT_DEPTH.fetch_add(1, Ordering::Relaxed);
+    enter_on(core());
 }
 
-/// Mark exit from interrupt context.  Called by the arch trap handler.
+/// Mark exit from interrupt context on the calling core.  Called by the arch
+/// trap handler.
 pub fn exit_interrupt() {
-    INTERRUPT_DEPTH.fetch_sub(1, Ordering::Relaxed);
+    exit_on(core());
 }
 
-/// True while the current core is handling an interrupt or exception.
+/// True while the calling core is handling an interrupt or exception.
 pub fn in_interrupt() -> bool {
-    INTERRUPT_DEPTH.load(Ordering::Relaxed) > 0
+    in_interrupt_on(core())
 }
 
-/// Architecture hooks for masking interrupts on the current core.
+fn enter_on(core: usize) {
+    INTERRUPT_DEPTH[core].fetch_add(1, Ordering::Relaxed);
+}
+
+fn exit_on(core: usize) {
+    INTERRUPT_DEPTH[core].fetch_sub(1, Ordering::Relaxed);
+}
+
+fn in_interrupt_on(core: usize) -> bool {
+    INTERRUPT_DEPTH[core].load(Ordering::Relaxed) > 0
+}
+
+/// Architecture hooks for the current core's interrupt context.
 /// `mask` masks interrupts and returns the previous interrupt state;
-/// `restore` reinstates a state previously returned by `mask`.
+/// `restore` reinstates a state previously returned by `mask`; `core_id`
+/// returns the calling core's index into `INTERRUPT_DEPTH` (always below
+/// `MAX_CPUS`).
 pub struct IrqOps {
     pub mask: fn() -> u64,
     pub restore: fn(u64),
+    pub core_id: fn() -> usize,
 }
 
 static IRQ_OPS: Once<&'static IrqOps> = Once::new();
@@ -89,5 +145,32 @@ impl Drop for IrqGuard {
         if let (Some(saved), Some(ops)) = (self.saved, ops()) {
             (ops.restore)(saved);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The table is the fix: a trap on one core must not read as interrupt
+    /// context on another.  A single shared counter (the old code) fails the
+    /// first `assert!(!in_interrupt_on(1))` below.
+    #[test]
+    fn depth_is_per_core() {
+        enter_on(0);
+        assert!(in_interrupt_on(0));
+        assert!(!in_interrupt_on(1), "core 1 read core 0's interrupt depth");
+
+        enter_on(1);
+        assert!(in_interrupt_on(0), "entering core 1 must not clear core 0");
+        assert!(in_interrupt_on(1));
+
+        exit_on(1);
+        assert!(in_interrupt_on(0), "exiting core 1 must not clear core 0");
+        assert!(!in_interrupt_on(1));
+
+        exit_on(0);
+        assert!(!in_interrupt_on(0));
+        assert!(!in_interrupt_on(1));
     }
 }
