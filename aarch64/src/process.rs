@@ -512,8 +512,9 @@ pub fn spawn(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     let user_text = aspace
         .map_user_page(Entry::rw_user_text(), text_va)
         .unwrap_or_else(|err| panic!("process text page: {err:?}"));
+    assert!(text.len() <= mem::PAGE_SIZE_4K, "text too large for one page");
     // SAFETY: user_text is the mapped text page (text_va), valid and
-    // writable, and text.len() bytes fit in the 4 KiB page.
+    // writable, and text.len() bytes fit in the 4 KiB page (asserted above).
     unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), user_text, text.len()) };
     // The stack page itself is mapped and then leaked: the user stack
     // pointer is the only thing the kernel keeps of it.
@@ -931,29 +932,36 @@ pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1) -> ! {
     }
 
     let node = LockNode::new();
-    // The faulting process's id, for the report.
+    // The slot whose pointer matches the TPIDR value is the faulting
+    // process.  `panic!` (as `switch_out` uses) rather than a silent
+    // fallback: a mismatched TPIDR is a kernel bug, and the default panic
+    // handler prints and halts — visible, rather than marking the wrong
+    // process.
     let current_id = {
-        let table = TABLE.lock(&node);
-        table
+        let mut table = TABLE.lock(&node);
+        let id = table
             .iter()
             .position(|slot| {
-                matches!(slot, Some(p) if (p as *const Process as *const ()) == (current as *const Process as *const ()))
+                matches!(
+                    slot,
+                    Some(p)
+                        if (p as *const Process as *const ())
+                            == (current as *const Process as *const ())
+                )
             })
-            .unwrap_or(0)
-    };
-    iprintln!("process {current_id} faulted: far {far:#x} esr {esr:?}");
-
-    {
-        let mut table = TABLE.lock(&node);
-        let Some(slot) =
-            table.iter_mut().find(|slot| matches!(slot, Some(p) if p.state == State::Running))
-        else {
-            panic!("fault: no Running process in the table");
-        };
-        let p = slot.as_mut().unwrap();
+            .unwrap_or_else(|| panic!("fault: TPIDR does not match any slot"));
+        let p = table
+            .get_mut(id)
+            .and_then(|slot| slot.as_mut())
+            .unwrap_or_else(|| panic!("fault: slot {id} is empty"));
+        if p.state != State::Running {
+            panic!("fault: process {id} is not Running (state {:?})", p.state);
+        }
         p.exit_status = FAULT_STATUS;
         p.state = State::Exited;
-    }
+        id
+    };
+    iprintln!("process {current_id} faulted: far {far:#x} esr {esr:?}");
 
     if !resched() {
         // No next Runnable: the last process.  Unwind run_all.

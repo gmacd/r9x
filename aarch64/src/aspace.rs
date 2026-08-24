@@ -34,6 +34,12 @@ use port::pagealloc::PageAllocError;
 /// page (one per process, bounded by `NPROCS` — not a `static`).  The raw
 /// pointer carries the "valid for the process's life; the page is not freed
 /// this arc" lifetime honestly (the established `process.rs` note).
+///
+/// Teardown (a later arc) must unmap both the TTBR0 entries (the process's
+/// text/stack) *and* the corresponding TTBR1 identity entries (the kernel
+/// mappings of the same pages, added by `new` and `map_user_page`) before
+/// the pages are freed — otherwise the kernel table leaks mappings into
+/// freed pages.
 #[cfg(target_os = "none")]
 pub struct Aspace {
     /// The process's TTBR0 root, in a pagealloc'd page.  Written only by this
