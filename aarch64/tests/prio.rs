@@ -2,8 +2,8 @@
 //! inheritance as a capability.
 //!
 //! Three user processes L, M, H each yield three times, then exit (6, 7,
-//! 8).  L and M are both at the default (User) priority; H is boosted to
-//! the Kernel priority by a kernel-side `process::boost` before the table
+//! 8).  L and M are both at the default priority; H is boosted to a
+//! high-urgency level by a kernel-side `process::boost` before the table
 //! runs — the manual stand-in for the blocking send that will do it in
 //! stage 2.  `run_all` starts with the lowest-index Runnable (L), and
 //! every switch after is a priority-ordered `resched`.
@@ -100,11 +100,11 @@ pub extern "C" fn main9(dtb_va: usize) {
 
     // H is the process a high-priority waiter would boost (stage 2 does
     // this on a blocking send; here it is a manual kernel-side call, the
-    // point of this stage).  Raise it to the kernel priority.
-    process::boost(h, process::Priority::Kernel);
+    // point of this stage).  Raise it to a high-urgency level.
+    process::boost(h, process::Priority::new(16));
     check!(
-        process::effective_priority(h) == Some(process::Priority::Kernel),
-        "boost raised H to Kernel, got {:?}",
+        process::effective_priority(h) == Some(process::Priority::new(16)),
+        "boost raised H to a high-urgency level, got {:?}",
         process::effective_priority(h)
     );
 

@@ -121,27 +121,47 @@ unsafe impl Sync for Kstacks {}
 static KSTACKS: Kstacks =
     Kstacks { stacks: core::cell::UnsafeCell::new([[0u8; KSTACK_SZ]; NPROCS]) };
 
-/// A process's scheduling priority.  A small fixed set, not an unbounded
-/// int: illegal values are unrepresentable and the compare is a plain enum
-/// order.  Higher orders run first; ties round-robin (see `pick_next`).
+/// A process's scheduling priority: an index into QNX's 256-level range,
+/// 0 most urgent, 255 the idle thread's slot.  A runnable process never
+/// takes 255 (it is the never-scheduled sentinel), so the live range is
+/// 0–254.  The order is QNX's inverted one — **lower is more urgent**, so a
+/// priority 8 runs ahead of a priority 200 one; the derived `Ord` follows
+/// the number (lower `<` higher), and `pick_next` takes the *minimum*.
+/// Ties at a level round-robin (see `pick_next`).
 #[cfg(any(target_os = "none", test))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Priority {
-    /// User processes; the default for a new `spawn` and the floor.
-    User,
-    /// Kernel work — the kernel context and the scheduling tick — which
-    /// must run ahead of user.  The ceiling, and the target of a PI
-    /// `boost`.
-    Kernel,
+#[repr(transparent)]
+pub struct Priority(u8);
+
+#[cfg(any(target_os = "none", test))]
+impl Priority {
+    /// Most urgent (QNX's level 0).
+    pub const MIN: Priority = Priority(0);
+    /// The idle thread's level and the never-scheduled sentinel: a
+    /// runnable process never takes it, so it is the top of the live range
+    /// (0–254).
+    pub const IDLE: Priority = Priority(255);
+
+    /// A priority by its level number (0 most urgent).
+    pub const fn new(level: u8) -> Priority {
+        Priority(level)
+    }
+
+    /// The level number (0 most urgent, 255 the idle sentinel).
+    pub const fn level(self) -> u8 {
+        self.0
+    }
 }
 
-/// The priority a new user process starts at.
+/// The priority a new user process starts at: mid-range, a normal user
+/// process — neither of the sentinel extremes.
 #[cfg(any(target_os = "none", test))]
-pub const DEFAULT_PRIORITY: Priority = Priority::User;
+pub const DEFAULT_PRIORITY: Priority = Priority::new(128);
 
 /// A slot's priority state: its own (`base`) priority and the priority it
-/// currently runs at (`effective`).  `effective` exceeds `base` only while
-/// the slot is boosted (priority inheritance).
+/// currently runs at (`effective`).  `effective` is more urgent than `base`
+/// (a lower level number) only while the slot is boosted (priority
+/// inheritance).
 #[cfg(any(target_os = "none", test))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PriorityState {
@@ -161,18 +181,20 @@ impl PriorityState {
         self.effective
     }
 
-    /// True while the slot's effective priority is raised above its base.
-    /// `>`, not `!=`, so a call that (incorrectly) sets `effective` below
-    /// `base` is never reported as boosted: boosted means raised, full
-    /// stop.
+    /// True while the slot's effective priority is more urgent than its
+    /// base.  `<`, not `!=`, so a call that (incorrectly) sets `effective`
+    /// *less* urgent than `base` is never reported as boosted: boosted means
+    /// more urgent, full stop.
     pub fn is_boosted(&self) -> bool {
-        self.effective > self.base
+        self.effective < self.base
     }
 
-    /// Raise the effective priority to `to`, remembering `base`.  `to` is
-    /// at or above `base` (a priority-inheritance raise).  PI is at most
-    /// once per slot (no stacking): a `boost` of an already-boosted slot is
-    /// a no-op, so a holder keeps its first boost until `unboost`.
+    /// Raise the effective priority to `to` (more urgent than `base`),
+    /// remembering `base`.  `to` is at least as urgent as `base` (a
+    /// priority-inheritance raise; a lower-urgency `to` is a no-op in effect
+    /// — see `is_boosted`).  PI is at most once per slot (no stacking): a
+    /// `boost` of an already-boosted slot is a no-op, so a holder keeps its
+    /// first boost until `unboost`.
     pub fn boost(&mut self, to: Priority) {
         if !self.is_boosted() {
             self.effective = to;
@@ -245,7 +267,7 @@ fn pick_next(slots: &[(State, Priority)], current: usize, cursor: usize) -> Opti
         .filter(|&i| i != current)
         .filter(|&i| slots[i].0 == State::Runnable)
         .map(|i| slots[i].1)
-        .max()?;
+        .min()?;
     // Among the ties at that priority, round-robin from just after the
     // cursor: the existing fairness, nested under priority rather than
     // replaced.
@@ -782,7 +804,7 @@ fn resched() -> bool {
         // is never picked.
         let slots: [(State, Priority); NPROCS] = core::array::from_fn(|i| match &table[i] {
             Some(p) => (p.state, p.prio.effective()),
-            None => (State::Exited, Priority::User),
+            None => (State::Exited, Priority::IDLE),
         });
         let next_id = pick_next(&slots, current_id, CURSOR.load(Ordering::Relaxed));
 
@@ -877,23 +899,29 @@ mod tests {
         (state, prio)
     }
 
+    // QNX levels, lower more urgent: a high-urgency boost target, the
+    // normal-user default, and a low-urgency one.
+    const HIGH: Priority = Priority::new(16);
+    const MID: Priority = Priority::new(128);
+    const LOW: Priority = Priority::new(200);
+
     #[test]
     fn picks_the_highest_priority_runnable() {
-        // Slot 0 empty, 1 a User (current), 2 a Kernel, 3 a User.  The
-        // Kernel at 2 beats the User at 3.
+        // Slot 0 empty, 1 a MID (current), 2 a HIGH, 3 a MID.  The HIGH
+        // at 2 beats the MID at 3.
         let slots = [
-            s(State::Exited, Priority::User),
-            s(State::Runnable, Priority::User),
-            s(State::Runnable, Priority::Kernel),
-            s(State::Runnable, Priority::User),
+            s(State::Exited, MID),
+            s(State::Runnable, MID),
+            s(State::Runnable, HIGH),
+            s(State::Runnable, MID),
         ];
         assert_eq!(pick_next(&slots, 1, 1), Some(2));
     }
 
     #[test]
     fn same_priority_round_robin_from_cursor() {
-        // Three User processes: the pick rotates with the cursor.
-        let slots = [s(State::Runnable, Priority::User); 3];
+        // Three MID processes: the pick rotates with the cursor.
+        let slots = [s(State::Runnable, MID); 3];
         assert_eq!(pick_next(&slots, 0, 0), Some(1));
         assert_eq!(pick_next(&slots, 1, 1), Some(2));
         assert_eq!(pick_next(&slots, 2, 2), Some(0));
@@ -901,61 +929,58 @@ mod tests {
 
     #[test]
     fn boost_raises_and_unboost_restores() {
-        let mut p = PriorityState::new(Priority::User);
-        assert_eq!(p.effective(), Priority::User);
+        let mut p = PriorityState::new(MID);
+        assert_eq!(p.effective(), MID);
         assert!(!p.is_boosted());
-        p.boost(Priority::Kernel);
-        assert_eq!(p.effective(), Priority::Kernel);
+        p.boost(HIGH);
+        assert_eq!(p.effective(), HIGH);
         assert!(p.is_boosted());
         p.unboost();
-        assert_eq!(p.effective(), Priority::User);
+        assert_eq!(p.effective(), MID);
         assert!(!p.is_boosted());
     }
 
     #[test]
     fn boosted_sorts_above_peers_and_drops_back() {
-        // Slot 0 a User peer, slot 1 boosted to Kernel.  While boosted,
-        // slot 1 is picked for its priority whatever the cursor is.
-        let boosted = [s(State::Runnable, Priority::User), s(State::Runnable, Priority::Kernel)];
+        // Slot 0 a MID peer, slot 1 boosted to HIGH.  While boosted, slot
+        // 1 is picked for its urgency whatever the cursor is.
+        let boosted = [s(State::Runnable, MID), s(State::Runnable, HIGH)];
         assert_eq!(pick_next(&boosted, 2, 0), Some(1));
         assert_eq!(pick_next(&boosted, 2, 1), Some(1));
-        // Once unboosted the two are tied: the pick follows the cursor
-        // (round-robin), not slot 1's former privilege — cursor past the
-        // peer serves the peer.
-        let unboosted = [s(State::Runnable, Priority::User), s(State::Runnable, Priority::User)];
+        // Once unboosted the two are tied (both MID): the pick follows the
+        // cursor (round-robin), not slot 1's former privilege — cursor past
+        // the peer serves the peer.
+        let unboosted = [s(State::Runnable, MID), s(State::Runnable, MID)];
         assert_eq!(pick_next(&unboosted, 2, 0), Some(1));
         assert_eq!(pick_next(&unboosted, 2, 1), Some(0));
     }
 
     #[test]
     fn reboost_is_a_no_op() {
-        let mut p = PriorityState::new(Priority::User);
-        p.boost(Priority::Kernel);
-        // A second boost, even to a different value, does not restack.
-        p.boost(Priority::User);
-        assert_eq!(p.effective(), Priority::Kernel);
+        let mut p = PriorityState::new(MID);
+        p.boost(HIGH);
+        // A second boost, even to a different (lower-urgency) value, does
+        // not restack.
+        p.boost(LOW);
+        assert_eq!(p.effective(), HIGH);
         p.unboost();
-        assert_eq!(p.effective(), Priority::User);
+        assert_eq!(p.effective(), MID);
     }
 
     #[test]
     fn current_is_never_reselected() {
         // Only the current slot is Runnable; it must not be reselected.
-        let slots = [s(State::Runnable, Priority::Kernel), s(State::Exited, Priority::User)];
+        let slots = [s(State::Runnable, HIGH), s(State::Exited, MID)];
         assert_eq!(pick_next(&slots, 0, 0), None);
     }
 
     #[test]
     fn running_is_not_selectable() {
         // A Running slot other than the current is on CPU, not Runnable:
-        // it is not picked even at a higher priority.
-        let slots = [
-            s(State::Running, Priority::Kernel),
-            s(State::Runnable, Priority::User),
-            s(State::Exited, Priority::User),
-        ];
-        // current is the Exited slot (the kernel); the Running Kernel at 0
-        // must not be picked — the Runnable User at 1 is.
+        // it is not picked even at a higher urgency.
+        let slots = [s(State::Running, HIGH), s(State::Runnable, MID), s(State::Exited, MID)];
+        // current is the Exited slot (the kernel); the Running HIGH at 0
+        // must not be picked — the Runnable MID at 1 is.
         assert_eq!(pick_next(&slots, 2, 2), Some(1));
     }
 }
