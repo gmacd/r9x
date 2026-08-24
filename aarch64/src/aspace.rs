@@ -1,0 +1,144 @@
+//! The per-process address space (stage 3 of the microkernel substrate,
+//! `_tasks/plans/microkernel-aspace.md`): a page-table root for the process's
+//! TTBR0, and the physical address of that root.
+//!
+//! The kernel stays in TTBR1 (unreachable from EL0 — its entries are `Priv*`),
+//! so switching a process's TTBR0 is one register write and leaves every
+//! kernel mapping reachable.  The process's TTBR0 is empty except its own
+//! text/stack (mapped by `process::spawn` through [`Aspace::map_user_page`]);
+//! a process reaches the kernel by syscall, not a mapped device page.  A fault
+//! in one process walks its *own* tables and kills only that process — the
+//! isolation property.  The device-mapping capability a server needs (stage 5's
+//! console) is a later `map_mmio` verb, refused here.
+//!
+//! The real binding is target-only; the host build (unit tests of the
+//! process/trap modules) sees a stub so they compile.
+
+#[cfg(target_os = "none")]
+use crate::kmem::physaddr_as_ptr_mut_offset_from_kzero;
+#[cfg(target_os = "none")]
+use crate::pagealloc;
+#[cfg(target_os = "none")]
+use crate::param::KZERO;
+#[cfg(target_os = "none")]
+use crate::vm::{
+    self, Entry, PhysPageAllocator, RootPageTable, RootPageTableType, VaMapping, VmTraitImpl,
+};
+#[cfg(target_os = "none")]
+use port::mem::{PAGE_SIZE_4K, PhysAddr, PhysRange};
+#[cfg(target_os = "none")]
+use port::pagealloc::PageAllocError;
+
+/// A process's address space: its TTBR0 page-table root and the physical
+/// address of that root (what TTBR0 holds).  The root lives in a pagealloc'd
+/// page (one per process, bounded by `NPROCS` — not a `static`).  The raw
+/// pointer carries the "valid for the process's life; the page is not freed
+/// this arc" lifetime honestly (the established `process.rs` note).
+#[cfg(target_os = "none")]
+pub struct Aspace {
+    /// The process's TTBR0 root, in a pagealloc'd page.  Written only by this
+    /// AS's `map_user_page` (before the process is reachable) and read by the
+    /// fault handler; the process table's slot discipline keeps two owners
+    /// apart.
+    root: *mut RootPageTable,
+    /// The physical address of the root — what TTBR0 holds.
+    root_pa: PhysAddr,
+}
+
+// SAFETY: the root is written only by this AS's own `map_user_page` (before
+// the process is reachable) and read by the fault handler; a slot's `Aspace`
+// is never freed or reused while a raw pointer to it is live (the process
+// table's discipline), so no two owners interleave.
+#[cfg(target_os = "none")]
+unsafe impl Sync for Aspace {}
+
+#[cfg(target_os = "none")]
+impl Aspace {
+    /// Create an address space: allocate a root page, map it into the kernel
+    /// table (TTBR1) at its identity VA so the kernel can write it, zero it,
+    /// set the index-511 self-pointer, and record its physical address.
+    /// Panics on allocation or mapping failure (init-only context, as
+    /// `spawn`'s page allocs do); there is no `Default` because a default AS
+    /// would allocate.
+    ///
+    /// The map-into-TTBR1 step is the load-bearing one: a pagealloc page is in
+    /// *available* memory, which the kernel table does not identity-map (only
+    /// the kernel's own sections are), so the root page must be mapped before
+    /// it can be written — the same step `deviceutil::alloc_device_page`
+    /// takes.
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Aspace {
+        let root_pa = pagealloc::allocate_physpage()
+            .unwrap_or_else(|err| panic!("aspace: root page: {err:?}"));
+        let range = PhysRange::with_pa_len(root_pa, PAGE_SIZE_4K);
+        // Map the root page into the kernel table at its identity VA (pa +
+        // KZERO), so the kernel can write it.  Reuses the intermediate tables
+        // the kernel's own mapping already built.
+        let mut physpage_allocator = PhysPageAllocator {};
+        let mut vmtrait_impl = VmTraitImpl {};
+        vm::kernel_pagetable()
+            .map_phys_range(
+                &mut physpage_allocator,
+                &mut vmtrait_impl,
+                "aspace-root",
+                &range,
+                VaMapping::Offset(KZERO),
+                Entry::rw_kernel_data(),
+                crate::vm::PageSize::Page4K,
+                RootPageTableType::Kernel,
+            )
+            .unwrap_or_else(|err| panic!("aspace: map root page: {err:?}"));
+        // The mapped VA is pa + KZERO (the identity offset); the root table
+        // lives there for the kernel's writes.
+        let root = physaddr_as_ptr_mut_offset_from_kzero::<RootPageTable>(root_pa);
+        unsafe {
+            // A fresh pagealloc page is not zeroed; the table must be all
+            // invalid entries before the self-pointer is written.
+            core::ptr::write_bytes(root as *mut u8, 0, PAGE_SIZE_4K);
+            // The index-511 self-pointer: lets the recursive walk build this
+            // table while a different one is live in TTBR0.
+            vm::init_empty_root_page_table(&mut *root);
+        }
+        Aspace { root, root_pa }
+    }
+
+    /// The physical address to install in TTBR0 for this AS.
+    pub fn ttbr0(&self) -> PhysAddr {
+        self.root_pa
+    }
+
+    /// Map a physical page into this AS at `va` (the process's own text/stack).
+    /// Reuses `pagealloc::allocate_virtpage` against this AS's root — the same
+    /// call `spawn` makes today, but into the process's own table.
+    pub fn map_user_page(&self, entry: Entry, va: usize) -> Result<*mut u8, PageAllocError> {
+        let page = pagealloc::allocate_virtpage(
+            unsafe { &mut *self.root },
+            "aspace",
+            entry,
+            VaMapping::Addr(va),
+            RootPageTableType::User,
+        )?;
+        Ok(page as *mut _ as *mut u8)
+    }
+}
+
+// Host builds (unit tests of the process/trap modules) see a stub so those
+// modules compile; it is never called (the aspace path is target-only).
+#[cfg(not(target_os = "none"))]
+pub struct Aspace;
+
+#[cfg(not(target_os = "none"))]
+impl Aspace {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Aspace {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    pub fn ttbr0(&self) -> usize {
+        0
+    }
+    pub fn map_user_page(&self, _entry: u64, _va: usize) -> *mut u8 {
+        core::ptr::null_mut()
+    }
+}

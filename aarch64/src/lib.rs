@@ -12,6 +12,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod allocator;
+pub mod aspace;
 pub mod boot;
 pub mod devcons;
 pub mod deviceutil;

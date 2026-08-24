@@ -260,6 +260,12 @@ struct Process {
     /// The slot's priority and its effective (possibly boosted) priority.
     /// Touched only under the table lock (module docs).
     prio: PriorityState,
+    /// The process's address space (its TTBR0 root).  Built at `spawn`, lives
+    /// for the process's life (the page is not freed this arc).  Read-only
+    /// after `spawn`; the switch path reads it to install the TTBR0.
+    /// `dead_code` this task (it is read by the switch path, aspace-switch).
+    #[allow(dead_code)]
+    aspace: crate::aspace::Aspace,
 }
 
 /// One optional process per slot, all empty.  Spelled out rather than
@@ -535,12 +541,17 @@ pub fn spawn(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     };
     let kstack = unsafe { KSTACKS.stacks.get().cast::<u8>().add(id * KSTACK_SZ) };
     let context = forkret_context(id, text_va, stack_va);
+    // The process's address space: built here, lives for the process's life.
+    // This task still maps the text/stack into the shared user table (above);
+    // installing this AS's TTBR0 on the switch path is aspace-switch.
+    let aspace = crate::aspace::Aspace::new();
     let proc = Process {
         state: State::Runnable,
         context,
         kstack,
         exit_status: 0,
         prio: PriorityState::new(DEFAULT_PRIORITY),
+        aspace,
     };
     table[id] = Some(proc);
     id

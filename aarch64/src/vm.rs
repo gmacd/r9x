@@ -543,10 +543,12 @@ pub unsafe fn init_user_page_tables() {
     unsafe { init_empty_root_page_table(user_pagetable()) };
 }
 
-/// Given an empty, statically allocated page table.  We need to write a
-/// recursive entry in the last entry.  To do this, we need to know the physical
-/// address, but all we have is the virtual address
-unsafe fn init_empty_root_page_table(root_page_table: &mut RootPageTable) {
+/// Given an empty, page-backed root page table, write the recursive entry in
+/// the last entry: it points at the table itself, which is what lets the
+/// recursive walk build the table while a *different* one is live in TTBR
+/// (the per-process `Aspace` root uses this).  The physical address is derived
+/// from the virtual one (the table is mapped offset from KZERO).
+pub(crate) unsafe fn init_empty_root_page_table(root_page_table: &mut RootPageTable) {
     unsafe {
         let entry = Entry::rw_kernel_data()
             .with_phys_addr(from_ptr_to_physaddr_offset_from_kzero(root_page_table))
