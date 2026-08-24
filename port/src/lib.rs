@@ -11,6 +11,7 @@ pub mod allocator;
 pub mod bitmapalloc;
 pub mod dat;
 pub mod devcons;
+pub mod elf;
 pub mod fdt;
 pub mod ipc;
 pub mod irq;
