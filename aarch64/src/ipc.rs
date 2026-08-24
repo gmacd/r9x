@@ -302,7 +302,17 @@ pub(crate) fn sys_map_mmio(pa: u64, va: u64) -> u64 {
     };
     let range = port::mem::PhysRange::with_pa_len(port::mem::PhysAddr::new(pa), PAGE);
     match aspace.map_mmio(&range, va as usize) {
-        Ok(()) => 0,
+        Ok(()) => {
+            // The mapping is live in the page table but the process's TLB
+            // may hold a stale entry (or a translation fault for this VA
+            // from before the mapping).  Invalidate the user TLB so the
+            // process's first access to the new mapping takes the fresh
+            // walk.
+            unsafe {
+                core::arch::asm!("tlbi vmalle1is", "dsb ish", "isb", options(nomem, nostack),);
+            }
+            0
+        }
         Err(_) => 1,
     }
 }

@@ -98,5 +98,10 @@ name = "irq"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "console_server"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true
