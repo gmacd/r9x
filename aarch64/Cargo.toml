@@ -83,5 +83,10 @@ name = "ipc"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "aspace"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true

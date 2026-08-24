@@ -36,13 +36,11 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::time::Duration;
 
 #[cfg(target_os = "none")]
-use crate::pagealloc;
-#[cfg(target_os = "none")]
 use crate::swtch::{Context, SPSR_EL1H, swtch};
 #[cfg(target_os = "none")]
 use crate::timer::{Timer, TimerCallback};
 #[cfg(target_os = "none")]
-use crate::vm::{self, Entry, RootPageTableType, VaMapping};
+use crate::vm::Entry;
 #[cfg(target_os = "none")]
 use port::irq::IrqGuard;
 #[cfg(target_os = "none")]
@@ -263,8 +261,6 @@ struct Process {
     /// The process's address space (its TTBR0 root).  Built at `spawn`, lives
     /// for the process's life (the page is not freed this arc).  Read-only
     /// after `spawn`; the switch path reads it to install the TTBR0.
-    /// `dead_code` this task (it is read by the switch path, aspace-switch).
-    #[allow(dead_code)]
     aspace: crate::aspace::Aspace,
 }
 
@@ -503,25 +499,21 @@ pub type ProcessId = usize;
 pub fn spawn(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     // Allocations run outside the table lock: the lock guards the
     // table, not the page allocator.
-    let user_text = pagealloc::allocate_virtpage(
-        vm::user_pagetable(),
-        "proctxt",
-        Entry::rw_user_text(),
-        VaMapping::Addr(text_va),
-        RootPageTableType::User,
-    )
-    .unwrap_or_else(|err| panic!("process text page: {err:?}"));
-    user_text.0[..text.len()].copy_from_slice(text);
+    // The process's address space: its TTBR0 root.  The text and stack are
+    // mapped into this AS (not the shared user table), so each process has
+    // its own tables — the isolation property a wild write cannot cross.
+    let aspace = crate::aspace::Aspace::new();
+    let user_text = aspace
+        .map_user_page(Entry::rw_user_text(), text_va)
+        .unwrap_or_else(|err| panic!("process text page: {err:?}"));
+    // SAFETY: user_text is the mapped text page (text_va), valid and
+    // writable, and text.len() bytes fit in the 4 KiB page.
+    unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), user_text, text.len()) };
     // The stack page itself is mapped and then leaked: the user stack
     // pointer is the only thing the kernel keeps of it.
-    let _user_stack = pagealloc::allocate_virtpage(
-        vm::user_pagetable(),
-        "procstack",
-        Entry::rw_user_data(),
-        VaMapping::Addr(stack_va),
-        RootPageTableType::User,
-    )
-    .unwrap_or_else(|err| panic!("process stack page: {err:?}"));
+    let _user_stack = aspace
+        .map_user_page(Entry::rw_user_data(), stack_va)
+        .unwrap_or_else(|err| panic!("process stack page: {err:?}"));
     let node = LockNode::new();
     // A slot is free when it is empty or already Exited: reclaiming is
     // lazy, and a slot is never overwritten while a raw pointer to its
@@ -541,10 +533,6 @@ pub fn spawn(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     };
     let kstack = unsafe { KSTACKS.stacks.get().cast::<u8>().add(id * KSTACK_SZ) };
     let context = forkret_context(id, text_va, stack_va);
-    // The process's address space: built here, lives for the process's life.
-    // This task still maps the text/stack into the shared user table (above);
-    // installing this AS's TTBR0 on the switch path is aspace-switch.
-    let aspace = crate::aspace::Aspace::new();
     let proc = Process {
         state: State::Runnable,
         context,
@@ -659,6 +647,11 @@ pub fn run_all() {
     let starter = starter_ctx_addr();
     unsafe {
         tpidr_set(first);
+        // Install the first process's TTBR0 before the switch: the table must
+        // be live before the process's first EL0 instruction.
+        // SAFETY: the first process's AS is live (built at spawn, never freed
+        // this arc).
+        (*first).aspace.install();
         swtch(starter, (*first).context, SPSR_EL1H | DAIF_MASKED);
     }
     // Resumed: the last process exited (exit_current switched back to
@@ -899,6 +892,13 @@ fn switch_out(demote_to: State) -> bool {
     // The lock is dropped before the switch: the suspended context's
     // eventual resched, same core, must not self-deadlock on it.
     unsafe { tpidr_set(next) };
+    // Install the next process's TTBR0 before the switch: the table must be
+    // live before the process's first EL0 instruction.  TPIDR is set first so
+    // a fault on that first instruction can find the process.
+    // SAFETY: the next process's AS is live (built at spawn, never freed this
+    // arc); install puts its root in TTBR0 with the TLBI/DSB/ISB the switch
+    // needs.
+    unsafe { (*next).aspace.install() };
     port::irq::exit_interrupt();
     unsafe { swtch(&mut (*cur).context, (*next).context, SPSR_EL1H | DAIF_MASKED) };
 

@@ -107,18 +107,66 @@ impl Aspace {
         self.root_pa
     }
 
-    /// Map a physical page into this AS at `va` (the process's own text/stack).
-    /// Reuses `pagealloc::allocate_virtpage` against this AS's root — the same
-    /// call `spawn` makes today, but into the process's own table.
+    /// Install this AS's root in TTBR0: the process's address space becomes
+    /// live.  The kernel stays in TTBR1 (unreachable from EL0).  The caller
+    /// holds the IRQ mask (the switch path does) so the TLBI/DSB/ISB window
+    /// is not preempted.
+    ///
+    /// # Safety
+    /// The AS must be fully constructed (its root mapped in TTBR1 by `new`)
+    /// and remain live for as long as it is installed.
+    pub unsafe fn install(&self) {
+        // SAFETY: the caller guarantees the AS is live; the root is mapped in
+        // TTBR1 (the kernel table) by `new`, so the dereference is valid and
+        // the table remains live while installed.
+        unsafe { vm::switch(&*self.root, RootPageTableType::User) };
+    }
+
+    /// Map a physical page into this AS at `va` (the process's own text/stack)
+    /// *and* into the kernel table (TTBR1) at its identity VA, so the kernel
+    /// can reach the page.  Returns the kernel pointer (the identity VA,
+    /// `pa + KZERO`) — the one the kernel writes through to load initial
+    /// contents (the text).  The user mapping at `va` is what the process
+    /// sees; the two map the same physical page.
+    ///
+    /// The kernel mapping is load-bearing: the kernel runs in TTBR1, which does
+    /// not map the user half, so it cannot write through the user VA — the
+    /// same physical page must be reachable in TTBR1 for the text copy.
     pub fn map_user_page(&self, entry: Entry, va: usize) -> Result<*mut u8, PageAllocError> {
-        let page = pagealloc::allocate_virtpage(
-            unsafe { &mut *self.root },
-            "aspace",
-            entry,
-            VaMapping::Addr(va),
-            RootPageTableType::User,
-        )?;
-        Ok(page as *mut _ as *mut u8)
+        // Allocate the physical page first (unmapped), so it can be mapped
+        // into both tables.
+        let page_pa = pagealloc::allocate_physpage()?;
+        let range = PhysRange::with_pa_len(page_pa, PAGE_SIZE_4K);
+        let mut physpage_allocator = PhysPageAllocator {};
+        let mut vmtrait_impl = VmTraitImpl {};
+        // The user mapping: the process sees the page at `va`.
+        unsafe { &mut *self.root }
+            .map_phys_range(
+                &mut physpage_allocator,
+                &mut vmtrait_impl,
+                "aspace-user",
+                &range,
+                VaMapping::Addr(va),
+                entry,
+                crate::vm::PageSize::Page4K,
+                RootPageTableType::User,
+            )
+            .map_err(|_| PageAllocError::UnableToMap)?;
+        // The kernel mapping: the kernel reaches the same page at its identity
+        // VA (pa + KZERO) in TTBR1, so it can write the text.
+        vm::kernel_pagetable()
+            .map_phys_range(
+                &mut physpage_allocator,
+                &mut vmtrait_impl,
+                "aspace-kern",
+                &range,
+                VaMapping::Offset(KZERO),
+                Entry::rw_kernel_data(),
+                crate::vm::PageSize::Page4K,
+                RootPageTableType::Kernel,
+            )
+            .map_err(|_| PageAllocError::UnableToMap)?;
+        Ok(physaddr_as_ptr_mut_offset_from_kzero::<u8>(page_pa))
     }
 }
 
