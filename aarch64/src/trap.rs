@@ -323,6 +323,11 @@ fn trap(frame: &mut TrapFrame) {
                     frame.x0 = result;
                     return;
                 }
+                process::SYCCREATECHAN => {
+                    let result = ipc::sys_createchan();
+                    frame.x0 = result;
+                    return;
+                }
                 // Exit and an unimplemented number both end the
                 // process, with the svc number as status.
                 _ => process::exit_current(syscall),
@@ -363,6 +368,7 @@ fn svc_returns(syscall: u64) -> bool {
             | process::SYCREPLY
             | process::SYSIRQCLAIM
             | process::SYSMAPMMIO
+            | process::SYCCREATECHAN
     )
 }
 
@@ -457,6 +463,7 @@ mod tests {
             process::SYCREPLY,
             process::SYSIRQCLAIM,
             process::SYSMAPMMIO,
+            process::SYCCREATECHAN,
         ] {
             assert!(svc_returns(n), "syscall {n} must return");
         }

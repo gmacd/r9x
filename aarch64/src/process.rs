@@ -92,6 +92,12 @@ pub const SYSIRQCLAIM: u64 = 19;
 /// is in x0 (0 on success, 1 on failure).  The process continues.
 pub const SYSMAPMMIO: u64 = 20;
 
+/// x8 value to create a channel: no arguments.  The result is in x0 — a
+/// fresh channel handle on success, an error code when the channel table is
+/// full (a live process must not panic the table, so a full table is an
+/// error, not the kernel-side `create()`'s assert).  The process continues.
+pub const SYCCREATECHAN: u64 = 21;
+
 /// The exit status a faulted process is marked with: distinct from a clean
 /// exit (which uses the svc number, 0–15 in the test images), so an image can
 /// tell a fault-death from a clean exit.

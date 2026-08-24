@@ -22,25 +22,32 @@ pub type ChannelHandle = usize;
 #[cfg(target_os = "none")]
 use crate::process::{self, Priority};
 #[cfg(target_os = "none")]
+use port::ipc::{self as ipc, IpcErr, IpcScheduler, MSG_MAX, Message, ProcId};
+// The channel table itself is host-testable (a plain `Channel` array and an
+// atomic count; `port::ipc::Channel` carries no target gate), so the host
+// build can unit-test `try_create`/`channel` — the observable of SYCCREATECHAN.
+// The atomic import is widened to match (the target-only IRQ/table code and
+// the host test both need `AtomicUsize`/`Ordering`).
+#[cfg(any(target_os = "none", test))]
 use core::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(target_os = "none")]
-use port::ipc::{self as ipc, Channel, IpcErr, IpcScheduler, MSG_MAX, Message, ProcId};
+#[cfg(any(target_os = "none", test))]
+use port::ipc::Channel;
 
 /// The number of channels: a fixed table (no allocation).  A channel handle
 /// is an index into it.
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", test))]
 const NCHANNELS: usize = 4;
 
 /// The channel table.  `Channel` is `!Copy` (it holds a lock), so the array
 /// is spelled out rather than repeated.  A channel is not reclaimed this arc:
 /// it lives for the program, so a handle is valid while in use and the lookup
 /// is a plain index into a `static`.
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", test))]
 static CHANNELS: [Channel; NCHANNELS] =
     [Channel::new(0), Channel::new(0), Channel::new(0), Channel::new(0)];
 
 /// How many channels have been created: the next handle is the old count.
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", test))]
 static NUSED: AtomicUsize = AtomicUsize::new(0);
 
 /// The number of IRQ routes: a fixed table (no allocation).  The Amiga's
@@ -109,18 +116,43 @@ static IRQ_ROUTES: [IrqRouteCell; NIRQS] = [
 #[cfg(target_os = "none")]
 static NIRQUEUED: AtomicUsize = AtomicUsize::new(0);
 
+/// Reserve a channel's table slot; the handle is its index, `None` when the
+/// table is full.  The counter only grows (a channel is not reclaimed this
+/// arc), so a `fetch_add` that lands at or past `NCHANNELS` is a full table:
+/// roll the count back and report it.  A full table from a live process is an
+/// error the caller maps, not a panic — the kernel-side [`create`] panics
+/// (its callers are init-context), the `SYCCREATECHAN` dispatch returns it.
+#[cfg(any(target_os = "none", test))]
+pub(crate) fn try_create() -> Option<ChannelHandle> {
+    let h = NUSED.fetch_add(1, Ordering::AcqRel);
+    if h < NCHANNELS {
+        Some(h)
+    } else {
+        // Over-allocated: undo the reservation.  A concurrent over-allocation
+        // rolls back in turn, so the count settles back to the true high-water
+        // mark (a channel is never reclaimed, so it only ever grows).
+        NUSED.fetch_sub(1, Ordering::AcqRel);
+        None
+    }
+}
+
 /// Create a channel; the handle is its table index.  The channel's owner is
 /// 0 this arc (the close-on-owner-death hook is not wired; see the module
 /// docs).
-#[cfg(target_os = "none")]
+///
+/// # Panics
+///
+/// When the table is full: the callers are init-context (the test images and
+/// `main9`), where a panic is the failure report.  A live process uses
+/// `SYCCREATECHAN`, whose dispatch goes through the non-panicking
+/// [`try_create`].
+#[cfg(any(target_os = "none", test))]
 pub fn create() -> ChannelHandle {
-    let h = NUSED.fetch_add(1, Ordering::AcqRel);
-    assert!(h < NCHANNELS, "ipc: no free channel slot ({NCHANNELS})");
-    h
+    try_create().unwrap_or_else(|| panic!("ipc: no free channel slot ({NCHANNELS})"))
 }
 
 /// The channel for `handle`, if it has been created.
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", test))]
 pub fn channel(handle: ChannelHandle) -> Option<&'static Channel> {
     if handle >= NCHANNELS || handle >= NUSED.load(Ordering::Acquire) {
         return None;
@@ -317,6 +349,17 @@ pub(crate) fn sys_map_mmio(pa: u64, va: u64) -> u64 {
     }
 }
 
+/// SYCCREATECHAN: no arguments.  Returns the x0 result — a fresh channel
+/// handle on success, `ERR_NO_SLOT` when the table is full (a live process
+/// must not panic the table; the kernel-side [`create`] panics, this does not).
+#[cfg(target_os = "none")]
+pub(crate) fn sys_createchan() -> u64 {
+    match try_create() {
+        Some(h) => h as u64,
+        None => ERR_NO_SLOT,
+    }
+}
+
 /// SYCSEND: `handle` on channel, `buf`/`len` the payload, `opcode`/`tag` the
 /// envelope.  Returns the x0 result code.
 #[cfg(target_os = "none")]
@@ -371,13 +414,8 @@ pub(crate) fn sys_reply(handle: u64, buf: *const u8, len: u64, opcode: u64, tag:
 
 // Host builds (the unit tests of the trap dispatch) see stub handlers so the
 // dispatch compiles; they are never called (the trap path is target-only).
-#[cfg(not(target_os = "none"))]
-pub fn create() -> ChannelHandle {
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
+// `create`/`channel` have no host stub: the channel table is host-testable,
+// so the host build runs the real ones (see the `use` gate above).
 #[cfg(not(target_os = "none"))]
 pub(crate) fn sys_send(_handle: u64, _buf: *const u8, _len: u64, _opcode: u64, _tag: u64) -> u64 {
     0
@@ -399,11 +437,6 @@ pub fn route(_intid: u16) -> Option<&'static ()> {
 }
 
 #[cfg(not(target_os = "none"))]
-pub fn channel(_handle: u32) -> Option<&'static ()> {
-    None
-}
-
-#[cfg(not(target_os = "none"))]
 pub(crate) fn sys_irq_claim(_intid: u64, _handle: u64) -> u64 {
     0
 }
@@ -411,4 +444,36 @@ pub(crate) fn sys_irq_claim(_intid: u64, _handle: u64) -> u64 {
 #[cfg(not(target_os = "none"))]
 pub(crate) fn sys_map_mmio(_pa: u64, _va: u64) -> u64 {
     0
+}
+
+#[cfg(not(target_os = "none"))]
+pub(crate) fn sys_createchan() -> u64 {
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The channel table is host-testable (the `use` gate above), so this is
+    // the observable of SYCCREATECHAN: a fresh create resolves through
+    // `channel`, and a create past the table's size is an error, not a panic.
+    // It is the only test that touches `NUSED`, so it resets the count first
+    // (the target build shares no state with it).
+    #[test]
+    fn createchan_fills_the_table_then_errors_not_panics() {
+        NUSED.store(0, Ordering::Relaxed);
+        // Four fresh creates fill the table; each resolves through `channel`.
+        for want in 0..NCHANNELS {
+            assert_eq!(try_create(), Some(want), "create #{want}");
+            assert!(channel(want).is_some(), "handle {want} must resolve");
+        }
+        // The next create is a full table: `None`, not a panic.
+        assert_eq!(try_create(), None, "a full table is an error, not a panic");
+        // An out-of-range handle does not resolve either.
+        assert!(channel(NCHANNELS).is_none());
+        // The kernel-side `create()` panics on a full table (its callers are
+        // init-context); `try_create` is the non-panicking form the
+        // SYCCREATECHAN dispatch uses, so it is what is tested here.
+    }
 }
