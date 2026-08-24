@@ -63,6 +63,24 @@ pub const SYSEXIT: u64 = 0;
 /// Runnable, the handler's `resched` switches to it first.
 pub const SYSYIELD: u64 = 1;
 
+/// x8 value for send on a channel: x0 = channel handle, x1 = user buffer
+/// pointer, x2 = buffer length, x3 = opcode, x4 = tag.  The result (0 on
+/// success, an error otherwise) is in x0 on return; the process continues.
+/// 16-18 sit above the exit-status range (0-15) the test images use.
+pub const SYCSEND: u64 = 16;
+
+/// x8 value for receive from a channel: x0 = channel handle, x1 = user buffer
+/// pointer, x2 = buffer capacity.  On return x0 = opcode, x3 = the bytes
+/// copied, x4 = tag (a closed channel puts an error in x0); the process
+/// continues.  A receive with no message queued blocks the process.
+pub const SYCRECEIVE: u64 = 17;
+
+/// x8 value for reply on a channel: x0 = channel handle, x1 = user buffer
+/// pointer, x2 = buffer length, x4 = tag.  The result is in x0; the process
+/// continues.  A reply whose message tag differs from the reply's tag
+/// returns an error and sends nothing.
+pub const SYCREPLY: u64 = 18;
+
 /// The trap frame's layout in trap.S, slot by slot.  `pub(crate)` and
 /// ungated because the host tests pin them to `TrapFrame`/`Context`:
 /// the layout is triple-maintained (the offsets spelled in trap.S,
@@ -215,6 +233,12 @@ enum State {
     Running,
     /// May be switched to.
     Runnable,
+    /// Off the ready set, waiting (on a message, this arc).  Put back on the
+    /// ready set by a matching `wake`; the switch-back is an ordinary
+    /// selection of the now-Runnable process.  Target-only: the host test
+    /// build never blocks a process.
+    #[cfg(target_os = "none")]
+    Blocked,
     /// Done.  `exit_status` is valid; the slot reclaims at the next
     /// `spawn`.
     Exited,
@@ -642,6 +666,22 @@ pub fn status(id: ProcessId) -> Option<u64> {
     }
 }
 
+/// Set `id`'s base priority (and its effective, when not boosted).  A process
+/// is spawned at [`DEFAULT_PRIORITY`]; this is how a test image places a
+/// process at a specific level (a boost only raises, so it cannot lower a
+/// base).  A no-op if `id` is not a live slot.
+#[cfg(target_os = "none")]
+pub fn set_priority(id: ProcessId, prio: Priority) {
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    if let Some(Some(p)) = table.get_mut(id) {
+        p.prio.base = prio;
+        if !p.prio.is_boosted() {
+            p.prio.effective = prio;
+        }
+    }
+}
+
 /// Raise the effective priority of `id` to `to` (at or above its base),
 /// remembering its base so `unboost` can restore it.  This is the hook a
 /// blocking wait will use to hand a waiter's priority to the resource it is
@@ -740,13 +780,20 @@ pub(crate) fn exit_current(status: u64) -> ! {
 }
 
 /// Switch from the current process to the next Runnable one, if there
-/// is one.  Called only from a trap handler with the current process
-/// on CPU (TPIDR non-null).
+/// is one, demoting the current process to `demote_to` in the table.
+/// Called only from a trap handler with the current process on CPU
+/// (TPIDR non-null).
+///
+/// `demote_to` is `Runnable` for a yield/preempt (the process is
+/// selectable again immediately) and `Blocked` for a blocking wait (it
+/// is selectable only after a matching `wake`).  Either way, the
+/// switch-back is an ordinary selection: the demoted process is picked
+/// by a later `switch_out` once it is Runnable again.
 ///
 /// Returns `true` — and never returns at all — when it switched: the
 /// caller's context is suspended on the kstack and will resume inside
 /// this same handler's frame (the vector tail completes the return to
-/// EL0 from there).  Returns `false` when nothing was Runnable.
+/// EL0 from there).  Returns `false` when nothing else was Runnable.
 ///
 /// The bracketing: the caller is in interrupt context (depth 1).  The
 /// switched-to process must run *outside* interrupt context — without
@@ -755,7 +802,7 @@ pub(crate) fn exit_current(status: u64) -> ! {
 /// before the `swtch`, and on resume `enter_interrupt`: we are back
 /// inside the suspended handler, whose `trap_unsafe` epilogue exits it.
 #[cfg(target_os = "none")]
-fn resched() -> bool {
+fn switch_out(demote_to: State) -> bool {
     let current = unsafe { tpidr_current() };
     if current.is_null() {
         // No process on CPU: nothing to switch from.  The EL1 path
@@ -786,15 +833,17 @@ fn resched() -> bool {
             })
             .unwrap_or_else(|| panic!("resched: current process not in the table"));
 
-        // Demote the current process so a preempted/yielding process is
-        // selectable again.  The condition keeps the exit path from
-        // resurrecting a process it just marked Exited — and the
-        // `demoted` flag keeps the re-mark below from doing the same.
+        // Demote the current process: `Runnable` for a yield/preempt
+        // (selectable again immediately), `Blocked` for a blocking wait
+        // (selectable only after a matching `wake`).  The condition
+        // keeps the exit path from resurrecting a process it just marked
+        // Exited — and the `demoted` flag keeps the re-mark below from
+        // doing the same.
         let mut demoted = false;
         if let Some(p) = table[current_id].as_mut()
             && p.state == State::Running
         {
-            p.state = State::Runnable;
+            p.state = demote_to;
             demoted = true;
         }
 
@@ -846,6 +895,53 @@ fn resched() -> bool {
     port::irq::enter_interrupt();
     unsafe { tpidr_set(cur) };
     true
+}
+
+/// Yield or preempt: switch to the next Runnable process, demoting the
+/// current one to Runnable (it is selectable again immediately).
+#[cfg(target_os = "none")]
+fn resched() -> bool {
+    switch_out(State::Runnable)
+}
+
+/// Put the current process off the ready set (a blocking wait).  Switches to
+/// the next Runnable process and does not return until the process is `wake`
+///-en and selected again.  Called from a blocking syscall; if nothing else is
+/// Runnable there is nowhere to go and the process is left Running (a
+/// deadlock the test images avoid by keeping a busy process runnable).
+#[cfg(target_os = "none")]
+pub(crate) fn block_current() -> bool {
+    switch_out(State::Blocked)
+}
+
+/// Put `id` back on the ready set: a Blocked process becomes Runnable and is
+/// selectable at the next selection.  A no-op unless `id` is a live Blocked
+/// slot (waking a Running/Runnable/Exited slot is a caller bug).
+#[cfg(target_os = "none")]
+pub(crate) fn wake(id: ProcessId) {
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    if let Some(Some(p)) = table.get_mut(id)
+        && p.state == State::Blocked
+    {
+        p.state = State::Runnable;
+    }
+}
+
+/// The id of the process on CPU (TPIDR non-null), if any.
+#[cfg(target_os = "none")]
+pub(crate) fn current_id() -> Option<ProcessId> {
+    let current = unsafe { tpidr_current() };
+    if current.is_null() {
+        return None;
+    }
+    let node = LockNode::new();
+    let table = TABLE.lock(&node);
+    table
+        .iter()
+        .position(|slot| {
+            matches!(slot, Some(p) if (p as *const Process as *const ()) == (current as *const Process as *const ()))
+        })
 }
 
 // Host (unit-test) builds have no table, no kstacks, and no switch;

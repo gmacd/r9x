@@ -17,6 +17,7 @@ pub mod devcons;
 pub mod deviceutil;
 pub mod gic;
 pub mod io;
+pub mod ipc;
 pub mod irq;
 pub mod kmem;
 pub mod mailbox;

@@ -1,7 +1,7 @@
 use core::fmt;
 
 use crate::reg::esr_el1::{EsrEl1, ExceptionClass};
-use crate::{gic, process, timer};
+use crate::{gic, ipc, process, timer};
 use port::iprintln;
 
 #[cfg(target_os = "none")]
@@ -252,18 +252,47 @@ fn trap(frame: &mut TrapFrame) {
         // immediate for EC 0x15 (Arm ARM DDI 0487) and is not used.
         Ok(ExceptionClass::SvcAarch64) => {
             let syscall = frame.x8;
-            if svc_returns(syscall) {
-                // Yield: the return is the whole handler; the vector's
-                // restore + eret puts the process back at the
-                // instruction after the svc.  The return is explicit:
-                // falling through would land in the unhandled-exception
-                // spin below.
-                process::yield_current();
-                return;
-            } else {
+            match syscall {
+                process::SYSYIELD => {
+                    // Yield: the return is the whole handler; the vector's
+                    // restore + eret puts the process back at the
+                    // instruction after the svc.
+                    process::yield_current();
+                    return;
+                }
+                process::SYCSEND => {
+                    let result = ipc::sys_send(
+                        frame.x0,
+                        frame.x1 as *const u8,
+                        frame.x2,
+                        frame.x3,
+                        frame.x4,
+                    );
+                    frame.x0 = result;
+                    return;
+                }
+                process::SYCRECEIVE => {
+                    let (op, bytes, tag) =
+                        ipc::sys_receive(frame.x0, frame.x1 as *mut u8, frame.x2);
+                    frame.x0 = op;
+                    frame.x3 = bytes;
+                    frame.x4 = tag;
+                    return;
+                }
+                process::SYCREPLY => {
+                    let result = ipc::sys_reply(
+                        frame.x0,
+                        frame.x1 as *const u8,
+                        frame.x2,
+                        frame.x3,
+                        frame.x4,
+                    );
+                    frame.x0 = result;
+                    return;
+                }
                 // Exit and an unimplemented number both end the
                 // process, with the svc number as status.
-                process::exit_current(syscall);
+                _ => process::exit_current(syscall),
             }
         }
         _ => {
@@ -278,10 +307,16 @@ fn trap(frame: &mut TrapFrame) {
     }
 }
 
-/// True iff the svc returns to the process rather than ending it:
-/// of the first kernel's syscalls, only yield does.
+/// True iff the svc returns to the process rather than ending it: yield and
+/// the message syscalls (send/receive/reply) all return; exit and every
+/// unimplemented number end it.  A test helper: the dispatch matches the
+/// numbers directly, so this is exercised only by the unit tests.
+#[cfg(test)]
 fn svc_returns(syscall: u64) -> bool {
-    syscall == process::SYSYIELD
+    matches!(
+        syscall,
+        process::SYSYIELD | process::SYCSEND | process::SYCRECEIVE | process::SYCREPLY
+    )
 }
 
 #[cfg(test)]
@@ -369,8 +404,11 @@ mod tests {
         // Only yield returns to the process; exit and every
         // unimplemented number end it.
         assert!(svc_returns(process::SYSYIELD), "yield must return");
+        for n in [process::SYCSEND, process::SYCRECEIVE, process::SYCREPLY] {
+            assert!(svc_returns(n), "ipc syscall {n} must return");
+        }
         assert!(!svc_returns(process::SYSEXIT), "exit must not return");
-        for n in [2u64, 3, 5, 100, u64::MAX] {
+        for n in [5u64, 100, u64::MAX] {
             assert!(!svc_returns(n), "unimplemented {n} must not return");
         }
     }

@@ -78,5 +78,10 @@ name = "prio"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "ipc"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true
