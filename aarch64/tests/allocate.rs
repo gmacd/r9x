@@ -14,7 +14,7 @@ extern crate alloc;
 
 use aarch64::param::KZERO;
 use aarch64::vm::{Entry, RootPageTableType, VaMapping};
-use aarch64::{boot, pagealloc, qemu, vm};
+use aarch64::{boot, mailbox, pagealloc, qemu, vm};
 use alloc::boxed::Box;
 use port::println;
 
@@ -28,6 +28,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     // here takes an interrupt, so the timer and GIC stay off.
     let dt = unsafe { boot::device_tree(dtb_va) };
     boot::page_allocator(&dt, dtb_va).unwrap();
+    mailbox::init(&dt);
     boot::console(&dt);
 
     println!("running allocate");

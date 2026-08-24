@@ -12,7 +12,7 @@
 
 use aarch64::reg::cnt_el0::{CntFrqEl0, CntPctEl0};
 use aarch64::timer::{Timer, TimerCallback};
-use aarch64::{boot, qemu};
+use aarch64::{boot, mailbox, qemu};
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use port::println;
@@ -97,6 +97,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     boot::irq_ops();
     let dt = unsafe { boot::device_tree(dtb_va) };
     boot::page_allocator(&dt, dtb_va).unwrap();
+    mailbox::init(&dt);
     boot::console(&dt);
     boot::interrupts(&dt);
 

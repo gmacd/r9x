@@ -1,6 +1,6 @@
 // Racy to start.
 
-use crate::uartmini::MiniUart;
+use crate::uartpl011::Pl011Uart;
 use port::devcons::{Console, IprintOps, Uart};
 use port::fdt::DeviceTree;
 use port::once::Once;
@@ -26,12 +26,12 @@ use port::println;
 // - UART2 PL011
 // - UART3 PL011
 
-static UART: Once<MiniUart> = Once::new();
+static UART: Once<Pl011Uart> = Once::new();
 
 static IPRINT_OPS: IprintOps = IprintOps { putb: iputb };
 
 /// Direct polled write for iprint, bypassing the console lock.
-/// `MiniUart::putb` needs only a shared reference, so this can safely
+/// `Pl011Uart::putb` needs only a shared reference, so this can safely
 /// alias the reference held by the console.  Drops the byte if the
 /// console is not up yet — `Once` makes that a check rather than an
 /// assumption.
@@ -43,9 +43,9 @@ fn iputb(b: u8) {
 
 pub fn init(dt: &DeviceTree) {
     Console::set_uart(|| {
-        let uart = MiniUart::new_with_map_ranges(dt);
+        let uart = Pl011Uart::new(dt);
 
-        // Return a statically initialised MiniUart.  If that couldn't be done for some reason,
+        // Return a statically initialised Pl011Uart.  If that couldn't be done for some reason,
         // return None and hope that things work out regardless
         match uart {
             Ok(uart) => {

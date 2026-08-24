@@ -15,6 +15,7 @@
 
 use aarch64::boot;
 use aarch64::io::read_reg;
+use aarch64::mailbox;
 use aarch64::qemu;
 use aarch64::uartmini::{AUX_ENABLE, AUX_MU_CNTL, AUX_MU_LSR, MiniUart};
 use port::devcons::Uart;
@@ -45,6 +46,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     // test is a separately constructed instance of the same hardware.
     let dt = unsafe { boot::device_tree(dtb_va) };
     boot::page_allocator(&dt, dtb_va).unwrap();
+    mailbox::init(&dt);
     boot::console(&dt);
 
     println!("running miniuart");

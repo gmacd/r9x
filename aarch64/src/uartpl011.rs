@@ -19,6 +19,15 @@ pub const UART0_IBRD: usize = 0x24; // Integer baud rate divisor
 pub const UART0_FBRD: usize = 0x28; // Fractional baud rate divisor
 pub const UART0_LCRH: usize = 0x2c; // Line control register
 pub const UART0_CR: usize = 0x30; // Control register
+
+// PL011 UARTCR control bits (PL011 TRM r1p2 §3.3.2): bit 0 UARTEN, bit 8 TXE,
+// bit 9 RXE.  Bit 7 is LBE (loopback); the old `0x81` "receive only" value
+// was really UARTEN|LBE, which routes TX'd bytes back into the device's RX
+// instead of out the wire — wrong for a console that must transmit.
+pub const CR_UARTEN: u32 = 1 << 0;
+pub const CR_TXE: u32 = 1 << 8;
+pub const CR_RXE: u32 = 1 << 9;
+
 pub const UART0_IMSC: usize = 0x38; // Interrupt mask set clear register
 pub const UART0_ICR: usize = 0x44; // Interrupt clear register
 
@@ -85,8 +94,8 @@ impl Pl011Uart {
         // Mask all interrupts
         write_reg(&self.pl011_virtrange, UART0_IMSC, 0x7f2);
 
-        // Enable UART0, receive only
-        write_reg(&self.pl011_virtrange, UART0_CR, 0x81);
+        // Enable UART0, transmit and receive.
+        write_reg(&self.pl011_virtrange, UART0_CR, CR_UARTEN | CR_TXE | CR_RXE);
     }
 
     fn gpiosetpull(&self, pin: u32, pull: GpioPull) {

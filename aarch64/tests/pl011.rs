@@ -17,10 +17,12 @@
 
 use aarch64::boot;
 use aarch64::deviceutil::{find_dt_physrange, map_device_register};
-use aarch64::io::{read_reg, write_reg};
+use aarch64::io::read_reg;
 use aarch64::mailbox;
 use aarch64::qemu;
-use aarch64::uartpl011::{Pl011Uart, UART0_CR, UART0_FBRD, UART0_IBRD, UART0_LCRH};
+use aarch64::uartpl011::{
+    CR_RXE, CR_TXE, CR_UARTEN, Pl011Uart, UART0_CR, UART0_FBRD, UART0_IBRD, UART0_LCRH,
+};
 use aarch64::vm::PageSize;
 use port::devcons::Uart;
 use port::println;
@@ -28,18 +30,20 @@ use port::println;
 #[macro_use]
 mod common;
 
-/// PL011 UARTCR transmitter-enable bit.  `init` leaves the device
-/// receive-only (0x81), so the transmit path is switched on here to test it.
-const TXE: u32 = 1 << 8;
+/// The enable bits `Pl011Uart::init` leaves set: UARTEN + TXE + RXE.
+const CR_ENABLE: u32 = CR_UARTEN | CR_TXE | CR_RXE;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main9(dtb_va: usize) {
-    // The console is the mini uart, kept only for logging; the device under
-    // test is the separate PL011.  The mailbox is needed by Pl011Uart::init.
+    // The early console is now this same PL011; the image exercises the
+    // driver's full init + transmit path on it.  The mailbox is needed by
+    // Pl011Uart::init.
     let dt = unsafe { boot::device_tree(dtb_va) };
     boot::page_allocator(&dt, dtb_va).unwrap();
-    boot::console(&dt);
+    // The mailbox is up before the console: Pl011Uart::init needs it for the
+    // PL011 clock.
     mailbox::init(&dt);
+    boot::console(&dt);
 
     println!("running pl011");
 
@@ -65,7 +69,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     let lcrh = read_reg(&pl011, UART0_LCRH);
     check!(lcrh == 0x70, "LCRH fifos + 8 bit, got {lcrh:#x}");
     let cr = read_reg(&pl011, UART0_CR);
-    check!(cr & 0x81 == 0x81, "CR uart + rx enabled, got {cr:#x}");
+    check!(cr & CR_ENABLE == CR_ENABLE, "CR uart + tx + rx enabled, got {cr:#x}");
 
     // The baud divider is computed from the fixed 3 MHz clock:
     // 3000000 / (16 * 115200) = 1.63 -> 1 integer, 40/64 fractional.
@@ -73,13 +77,12 @@ pub extern "C" fn main9(dtb_va: usize) {
     let fbrd = read_reg(&pl011, UART0_FBRD);
     check!(ibrd == 1 && fbrd == 40, "baud dividers {ibrd} + {fbrd}/64");
 
-    // Exercise the transmit path: switch on the transmitter (init left it
-    // receive-only) and send a string through the driver's putb.  QEMU does
-    // not model the PL011 flag register's FIFO-empty bits, so there is no
-    // completion flag to poll; a wrong mapping would already have failed the
-    // readbacks above, and here a bad one would fault on these writes.  The
-    // bytes go to a discarded serial port.
-    write_reg(&pl011, UART0_CR, cr | TXE);
+    // Exercise the transmit path: init leaves TXE set, so the driver's putb
+    // transmits directly.  QEMU does not model the PL011 flag register's
+    // FIFO-empty bits, so there is no completion flag to poll; a wrong
+    // mapping would already have failed the readbacks above, and here a bad
+    // one would fault on these writes.  The bytes go to a discarded serial
+    // port.
     for &b in b"pl011 tx ok\n" {
         uart.putb(b);
     }

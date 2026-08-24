@@ -16,7 +16,7 @@
 #![no_main]
 
 use aarch64::vm::RootPageTableType;
-use aarch64::{boot, process, qemu, vm};
+use aarch64::{boot, mailbox, process, qemu, vm};
 use port::println;
 
 #[macro_use]
@@ -48,6 +48,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     boot::irq_ops();
     let dt = unsafe { boot::device_tree(dtb_va) };
     boot::page_allocator(&dt, dtb_va).unwrap();
+    mailbox::init(&dt);
     boot::console(&dt);
     boot::interrupts(&dt);
 

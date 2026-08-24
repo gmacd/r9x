@@ -98,8 +98,11 @@ pub extern "C" fn main9(dtb_va: usize) {
         panic!("couldn't init page allocator: {err:?}");
     }
 
-    boot::console(&dt);
+    // The mailbox is a separate device, up before the console: the PL011
+    // console needs it for its clock, and the board info printed below reads
+    // it too.
     mailbox::init(&dt);
+    boot::console(&dt);
 
     // Interrupt bringup, in a required order:
     //   1. gic::init enables the distributor and this core's CPU

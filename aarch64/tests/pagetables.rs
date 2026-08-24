@@ -15,6 +15,7 @@ use aarch64::kmem::{
     boottext_physrange, bss_physrange, data_physrange, rodata_physrange, text_physrange,
     total_kernel_physrange,
 };
+use aarch64::mailbox;
 use aarch64::param::KZERO;
 use aarch64::qemu;
 use aarch64::vm;
@@ -30,6 +31,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     // no timer, no GIC, no interrupts.
     let dt = unsafe { boot::device_tree(dtb_va) };
     boot::page_allocator(&dt, dtb_va).unwrap();
+    mailbox::init(&dt);
     boot::console(&dt);
 
     println!("running pagetables");

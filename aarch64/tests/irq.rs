@@ -14,7 +14,7 @@
 #![no_std]
 #![no_main]
 
-use aarch64::{boot, ipc, qemu};
+use aarch64::{boot, ipc, mailbox, qemu};
 use port::ipc::Message;
 use port::println;
 
@@ -28,6 +28,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     boot::irq_ops();
     let dt = unsafe { boot::device_tree(dtb_va) };
     boot::page_allocator(&dt, dtb_va).unwrap();
+    mailbox::init(&dt);
     boot::console(&dt);
     boot::interrupts(&dt);
 

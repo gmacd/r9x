@@ -635,14 +635,15 @@ impl QemuStep {
                 apply_to_qemu_step(&mut cmd, &self.config);
 
                 // TODO Choose UART at cmdline
-                // If using UART0 (PL011), this enables serial
                 cmd.arg("-nographic");
 
-                // If using UART1 (MiniUART), this enables serial
-                cmd.arg("-serial");
-                cmd.arg("null");
+                // The PL011 (UART0, serial_hd(0)) is the early console, so it
+                // lands on the terminal; the mini-UART (UART1, serial_hd(1))
+                // goes to the null sink.
                 cmd.arg("-serial");
                 cmd.arg("mon:stdio");
+                cmd.arg("-serial");
+                cmd.arg("null");
 
                 if self.wait_for_gdb {
                     cmd.arg("-s").arg("-S");
@@ -1590,8 +1591,9 @@ impl ArchIntegrationTests {
         match self.arch {
             Arch::Aarch64 => {
                 apply_to_qemu_step(&mut cmd, &self.config);
-                cmd.arg("-serial").arg("null");
+                // PL011 (serial_hd(0)) to the terminal, mini-UART to null.
                 cmd.arg("-serial").arg("mon:stdio");
+                cmd.arg("-serial").arg("null");
                 // Semihosting is how the test leaves QEMU with a status.
                 cmd.arg("-semihosting");
             }
