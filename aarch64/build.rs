@@ -1,21 +1,26 @@
-//! Stage the built console server's ELF into `OUT_DIR` for the `console_server`
-//! integration image to `include_bytes!`.
+//! Stage the built server ELFs into `OUT_DIR` for the server-embedding
+//! integration images to `include_bytes!`.
 //!
-//! The ELF is produced by xtask's `ServerStep` (aarch64 only) at
-//! `target/<target>/<profile>/console.elf`.  This script reruns when that file
-//! changes (mtime), so a rebuilt server re-embeds the new bytes — the "change
-//! the server, the image rebuilds" property the arc proves.  A bare `cargo
-//! build` of the image outside xtask, with no prior server build, fails loudly
-//! here rather than with a missing-file mystery at the `include_bytes!`.
+//! Each ELF is produced by xtask's `ServerStep` (aarch64 only) at
+//! `target/<target>/<profile>/<server>.elf`.  This script reruns when any of
+//! them changes (mtime), so a rebuilt server re-embeds the new bytes — the
+//! "change the server, the image rebuilds" property the arc proves.  A bare
+//! `cargo build` of the image outside xtask, with no prior server build, fails
+//! loudly here rather than with a missing-file mystery at the `include_bytes!`.
 //!
 //! The build script always runs for the host, so it may use `std` (the aarch64
 //! crate it belongs to is `no_std` — the script is a separate host artifact).
 //! It runs once per build of the crate, for every target of it, so the kernel
-//! image build transitively needs the ELF staged even though only the
-//! `console_server` test embeds it; xtask's build path runs the `ServerStep`
-//! first, and a bare build fails here instead.
+//! image build transitively needs every server ELF staged even though only the
+//! server-embedding images (`console_server`, and the `namespace` image) embed
+//! them; xtask's build path runs the `ServerStep` first, and a bare build
+//! fails here instead.
 
 use std::path::PathBuf;
+
+/// The aarch64 user-space servers the embedding images may include; must match
+/// xtask's `ServerStep::SERVERS` (the two stage the same paths).
+const SERVERS: [&str; 2] = ["console", "nameserver"];
 
 fn main() {
     let manifest_dir =
@@ -32,26 +37,30 @@ fn main() {
         }
         _ => root.join("target"),
     };
-    // The console ELF is staged by xtask's ServerStep under the aarch64
-    // JSON-spec target name (a fixed part of the repo) — not `TARGET`, which
-    // varies by how this crate is being built: a JSON-spec build and the
-    // host-toolchain check step use different target names for it.
-    let elf = target_dir
-        .join("aarch64-unknown-none-elf")
-        .join(std::env::var("PROFILE").expect("PROFILE"))
-        .join("console.elf");
-
-    // Rebuild this script — and so the embedding image — when the server's ELF
-    // changes: the edge of the "change the server, the image rebuilds" property.
-    println!("cargo:rerun-if-changed={}", elf.display());
-
-    if !elf.exists() {
-        panic!(
-            "console.elf not found at {};\nbuild the console server first: `cargo xtask build --arch aarch64`",
-            elf.display()
-        );
-    }
+    // The staged ELFs sit under the aarch64 JSON-spec target name (a fixed
+    // part of the repo) — not `TARGET`, which varies by how this crate is
+    // being built: a JSON-spec build and the host-toolchain check step use
+    // different target names for it.
+    let profile = std::env::var("PROFILE").expect("PROFILE");
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
-    std::fs::copy(&elf, PathBuf::from(out_dir).join("console.elf"))
-        .expect("copy console.elf into OUT_DIR");
+    for server in SERVERS {
+        let elf = target_dir
+            .join("aarch64-unknown-none-elf")
+            .join(&profile)
+            .join(format!("{server}.elf"));
+
+        // Rebuild this script — and so the embedding image — when this
+        // server's ELF changes: the edge of the "change the server, the image
+        // rebuilds" property.
+        println!("cargo:rerun-if-changed={}", elf.display());
+
+        if !elf.exists() {
+            panic!(
+                "{server}.elf not found at {};\nbuild the servers first: `cargo xtask build --arch aarch64`",
+                elf.display()
+            );
+        }
+        std::fs::copy(&elf, PathBuf::from(&out_dir).join(format!("{server}.elf")))
+            .unwrap_or_else(|e| panic!("copy {server}.elf into OUT_DIR: {e}"));
+    }
 }
