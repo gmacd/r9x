@@ -318,6 +318,11 @@ fn trap(frame: &mut TrapFrame) {
                     frame.x0 = result;
                     return;
                 }
+                process::SYSMAPMMIO => {
+                    let result = ipc::sys_map_mmio(frame.x0, frame.x1);
+                    frame.x0 = result;
+                    return;
+                }
                 // Exit and an unimplemented number both end the
                 // process, with the svc number as status.
                 _ => process::exit_current(syscall),
@@ -352,7 +357,12 @@ fn trap(frame: &mut TrapFrame) {
 fn svc_returns(syscall: u64) -> bool {
     matches!(
         syscall,
-        process::SYSYIELD | process::SYCSEND | process::SYCRECEIVE | process::SYCREPLY
+        process::SYSYIELD
+            | process::SYCSEND
+            | process::SYCRECEIVE
+            | process::SYCREPLY
+            | process::SYSIRQCLAIM
+            | process::SYSMAPMMIO
     )
 }
 
@@ -438,11 +448,17 @@ mod tests {
 
     #[test]
     fn svc_dispatch_classification() {
-        // Only yield returns to the process; exit and every
-        // unimplemented number end it.
+        // Yield, the message syscalls, IRQ claim, and MMIO map all
+        // return to the process; exit and every unimplemented number end it.
         assert!(svc_returns(process::SYSYIELD), "yield must return");
-        for n in [process::SYCSEND, process::SYCRECEIVE, process::SYCREPLY] {
-            assert!(svc_returns(n), "ipc syscall {n} must return");
+        for n in [
+            process::SYCSEND,
+            process::SYCRECEIVE,
+            process::SYCREPLY,
+            process::SYSIRQCLAIM,
+            process::SYSMAPMMIO,
+        ] {
+            assert!(svc_returns(n), "syscall {n} must return");
         }
         assert!(!svc_returns(process::SYSEXIT), "exit must not return");
         for n in [5u64, 100, u64::MAX] {

@@ -165,6 +165,20 @@ impl Entry {
             .with_valid(true)
     }
 
+    /// User+kernel read/write, Device memory (not cacheable), execute-never,
+    /// inner-shareable.  For device MMIO mapped into a process's TTBR0
+    /// (stage 5: the console server's UART register page).
+    pub fn rw_user_mmio() -> Self {
+        Entry(0)
+            .with_access_permission(AccessPermission::AllRw)
+            .with_shareable(Shareable::Inner)
+            .with_accessed(true)
+            .with_uxn(true)
+            .with_pxn(true)
+            .with_mair_index(Mair::Device)
+            .with_valid(true)
+    }
+
     pub fn rw_user_text() -> Self {
         Entry(0)
             .with_access_permission(AccessPermission::AllRw)

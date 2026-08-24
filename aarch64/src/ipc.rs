@@ -286,6 +286,27 @@ pub fn sys_irq_claim(intid: u64, handle: u64) -> u64 {
     OK
 }
 
+/// SYSMAPMMIO: x0 = physical address (page-aligned), x1 = user VA.  Maps the
+/// physical page into the current process's TTBR0 with Device memory
+/// attributes.  Returns 0 on success, 1 on failure (bad address or mapping
+/// error).  The kernel is device-dumb: it provides the capability, the
+/// server decides which MMIO to map (the QNX model).
+#[cfg(target_os = "none")]
+pub(crate) fn sys_map_mmio(pa: u64, va: u64) -> u64 {
+    const PAGE: usize = port::mem::PAGE_SIZE_4K;
+    if !(pa as usize).is_multiple_of(PAGE) {
+        return 1;
+    }
+    let Some(aspace) = process::current_aspace() else {
+        return 1;
+    };
+    let range = port::mem::PhysRange::with_pa_len(port::mem::PhysAddr::new(pa), PAGE);
+    match aspace.map_mmio(&range, va as usize) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
 /// SYCSEND: `handle` on channel, `buf`/`len` the payload, `opcode`/`tag` the
 /// envelope.  Returns the x0 result code.
 #[cfg(target_os = "none")]
@@ -374,5 +395,10 @@ pub fn channel(_handle: u32) -> Option<&'static ()> {
 
 #[cfg(not(target_os = "none"))]
 pub(crate) fn sys_irq_claim(_intid: u64, _handle: u64) -> u64 {
+    0
+}
+
+#[cfg(not(target_os = "none"))]
+pub(crate) fn sys_map_mmio(_pa: u64, _va: u64) -> u64 {
     0
 }

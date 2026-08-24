@@ -8,8 +8,8 @@
 //! text/stack (mapped by `process::spawn` through [`Aspace::map_user_page`]);
 //! a process reaches the kernel by syscall, not a mapped device page.  A fault
 //! in one process walks its *own* tables and kills only that process — the
-//! isolation property.  The device-mapping capability a server needs (stage 5's
-//! console) is a later `map_mmio` verb, refused here.
+//! isolation property.  A server maps its device's MMIO through
+//! [`Aspace::map_mmio`] (stage 5: the console server's UART register page).
 //!
 //! The real binding is target-only; the host build (unit tests of the
 //! process/trap modules) sees a stub so they compile.
@@ -174,6 +174,28 @@ impl Aspace {
             .map_err(|_| PageAllocError::UnableToMap)?;
         Ok(physaddr_as_ptr_mut_offset_from_kzero::<u8>(page_pa))
     }
+
+    /// Map a device's MMIO range into this AS at `va` (the process sees the
+    /// device registers).  Does NOT map into TTBR1 (the kernel does not need
+    /// the device page; the server owns it exclusively).  The range must be
+    /// page-aligned and ≤ one page for this arc.
+    pub fn map_mmio(&self, range: &PhysRange, va: usize) -> Result<(), PageAllocError> {
+        let mut physpage_allocator = PhysPageAllocator {};
+        let mut vmtrait_impl = VmTraitImpl {};
+        unsafe { &mut *self.root }
+            .map_phys_range(
+                &mut physpage_allocator,
+                &mut vmtrait_impl,
+                "aspace-mmio",
+                range,
+                VaMapping::Addr(va),
+                Entry::rw_user_mmio(),
+                crate::vm::PageSize::Page4K,
+                RootPageTableType::User,
+            )
+            .map_err(|_| PageAllocError::UnableToMap)?;
+        Ok(())
+    }
 }
 
 // Host builds (unit tests of the process/trap modules) see a stub so those
@@ -195,4 +217,5 @@ impl Aspace {
     pub fn map_user_page(&self, _entry: u64, _va: usize) -> *mut u8 {
         core::ptr::null_mut()
     }
+    pub fn map_mmio(&self, _range: &port::mem::PhysRange, _va: usize) {}
 }

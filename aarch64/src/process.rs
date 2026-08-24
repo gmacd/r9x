@@ -85,6 +85,13 @@ pub const SYCREPLY: u64 = 18;
 /// an error code on failure).  The process continues.
 pub const SYSIRQCLAIM: u64 = 19;
 
+/// x8 value to map a physical page into the current process's TTBR0 with
+/// Device memory attributes: x0 = physical address (page-aligned),
+/// x1 = user VA.  The kernel maps the page into the process's address space
+/// only (no TTBR1 mapping; the server owns the MMIO exclusively).  The result
+/// is in x0 (0 on success, 1 on failure).  The process continues.
+pub const SYSMAPMMIO: u64 = 20;
+
 /// The exit status a faulted process is marked with: distinct from a clean
 /// exit (which uses the svc number, 0–15 in the test images), so an image can
 /// tell a fault-death from a clean exit.
@@ -1026,6 +1033,22 @@ pub(crate) fn current_id() -> Option<ProcessId> {
         .position(|slot| {
             matches!(slot, Some(p) if (p as *const Process as *const ()) == (current as *const Process as *const ()))
         })
+}
+
+/// The current process's `Aspace`, if a process is on CPU (TPIDR non-null).
+/// The caller (a syscall handler) runs in the process's context; the Aspace
+/// is written only by this process's own `map_mmio` call (no other core
+/// writes to this process's root), so a shared reference is sufficient.
+#[cfg(target_os = "none")]
+pub(crate) fn current_aspace() -> Option<&'static crate::aspace::Aspace> {
+    let current = unsafe { tpidr_current() };
+    if current.is_null() {
+        return None;
+    }
+    // SAFETY: TPIDR points to a live `Process` in the table (the table's
+    // discipline: a slot's `Process` is never freed or reused while TPIDR
+    // points to it); the `Aspace` field lives for the process's life.
+    Some(unsafe { &(*current).aspace })
 }
 
 // Host (unit-test) builds have no table, no kstacks, and no switch;
