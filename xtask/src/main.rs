@@ -402,6 +402,11 @@ impl BuildStep {
     }
 
     fn run(self) -> Result<()> {
+        // The aarch64 crate's build.rs stages the console server's ELF (the
+        // console_server image embeds it), so the kernel-image build needs it
+        // present; build the server first.  A bare build outside xtask hits the
+        // build.rs's loud failure instead.
+        ServerStep::new(self.arch, self.profile, self.verbose).run()?;
         let mut cmd = Command::new(cargo());
         cmd.arg("build");
 
@@ -884,6 +889,15 @@ impl TestStep {
                 "xtask: skipping {}: an arch package's tests run only on its native host",
                 skipped.join(", ")
             );
+        }
+
+        // On an aarch64 host the aarch64 package's tests include the
+        // console_server image, whose build.rs stages the console server's ELF
+        // into OUT_DIR; build the server first so the ELF is present.  A bare
+        // `cargo test` (or this step) on a clean tree would otherwise panic in
+        // the build script before anything compiles.
+        if host == "aarch64" {
+            ServerStep::new(Arch::Aarch64, Profile::Debug, self.verbose).run()?;
         }
 
         for package in packages {
