@@ -5,6 +5,11 @@ use crate::{gic, ipc, process, timer};
 use port::iprintln;
 
 #[cfg(target_os = "none")]
+use crate::ipc::KernSched;
+#[cfg(target_os = "none")]
+use port::ipc::{MSG_MAX, Message};
+
+#[cfg(target_os = "none")]
 core::arch::global_asm!(include_str!("trap.S"));
 
 pub fn init() {
@@ -231,9 +236,27 @@ fn trap(frame: &mut TrapFrame) {
             if intid == timer::intid() {
                 timer::interrupt_handler();
             } else {
-                iprintln!("Unhandled GIC IRQ {intid}");
-                // Disable to avoid repeated unhandled interrupts
-                gic::disable_interrupt(intid);
+                #[cfg(target_os = "none")]
+                {
+                    // Enqueue a pre-allocated message on the owning channel.
+                    // The message is a fixed opcode (the INTID), no payload:
+                    // the server knows which device fired because it claimed
+                    // the INTID.  `try_send` returns `Err(Full)` when the
+                    // queue is full: the message is lost (the Amiga's answer).
+                    if let Some(ch) = ipc::route(intid) {
+                        let msg = Message { opcode: intid, tag: 0, len: 0, buf: [0; MSG_MAX] };
+                        let _ = port::ipc::try_send(&KernSched, ch, msg);
+                    } else {
+                        iprintln!("Unhandled GIC IRQ {intid}");
+                        // Disable to avoid repeated unhandled interrupts
+                        gic::disable_interrupt(intid);
+                    }
+                }
+                #[cfg(not(target_os = "none"))]
+                {
+                    iprintln!("Unhandled GIC IRQ {intid}");
+                    gic::disable_interrupt(intid);
+                }
             }
             gic::end_interrupt(iar);
         }
@@ -287,6 +310,11 @@ fn trap(frame: &mut TrapFrame) {
                         frame.x3,
                         frame.x4,
                     );
+                    frame.x0 = result;
+                    return;
+                }
+                process::SYSIRQCLAIM => {
+                    let result = ipc::sys_irq_claim(frame.x0, frame.x1);
                     frame.x0 = result;
                     return;
                 }

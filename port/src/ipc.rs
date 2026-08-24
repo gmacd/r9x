@@ -274,6 +274,47 @@ pub fn send<S: IpcScheduler>(
     }
 }
 
+/// Send a message on `ch` through `sched` without blocking: the interrupt-
+/// context variant of [`send`].  The fast path (a receiver is blocked) is the
+/// same as `send`: hand the message and wake it.  No PI: the caller is the
+/// kernel (not a process), so there is no client priority to inherit.  The
+/// slow path (no receiver blocked, room in the queue) enqueues and returns
+/// `Ok(())`.  The full-queue path returns [`IpcErr::Full`]: the message is
+/// lost, not retried (the Amiga's answer — a lost display-refresh interrupt
+/// is acceptable; a lost input is the server's problem, it polls the device).
+///
+/// This function never blocks and never allocates: it is safe to call in
+/// interrupt context.
+pub fn try_send<S: IpcScheduler>(
+    sched: &S,
+    ch: &Channel,
+    msg: Message,
+) -> core::result::Result<(), IpcErr> {
+    let node = crate::mcslock::LockNode::new();
+    let fast = {
+        let mut inner = ch.inner.lock(&node);
+        if inner.closed {
+            return Err(IpcErr::Closed);
+        }
+        if let Some(receiver) = inner.recv_waiter.take() {
+            // Fast path: a receiver is blocked; hand it the message and wake
+            // it.  No PI (the caller is the kernel, not a process).
+            debug_assert!(inner.queue.push(msg));
+            Some(receiver)
+        } else if inner.queue.push(msg) {
+            // Slow path: no receiver blocked, room in the queue.
+            None
+        } else {
+            // Full: the message is lost (no allocation, no blocking).
+            return Err(IpcErr::Full);
+        }
+    };
+    if let Some(receiver) = fast {
+        sched.wake(receiver);
+    }
+    Ok(())
+}
+
 /// Receive a message from `ch` through `sched`.
 ///
 /// Dequeues a message if one is queued (waking a sender blocked on a full
@@ -560,5 +601,80 @@ mod tests {
         m.run(CLIENT, |m| {
             assert_eq!(send(m, &m.channel, Message::new(1, 1, &[])), Err(IpcErr::Closed));
         });
+    }
+
+    #[test]
+    fn try_send_slow_path_enqueues() {
+        // No receiver blocked, room in the queue: the message is enqueued.
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        assert_eq!(try_send(&m, &m.channel, Message::new(1, 1, &[])), Ok(()));
+        m.run(SERVER, |m| {
+            let msg = receive(m, &m.channel).unwrap();
+            assert_eq!(msg.tag, 1);
+        });
+    }
+
+    #[test]
+    fn try_send_fast_path_wakes_receiver() {
+        // A receiver is blocked: the message is handed to it and it is woken.
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        m.on_block.replace(Some(Rc::new(|m: &Mock| {
+            // The "interrupt" arrives while the server is blocked.
+            assert_eq!(try_send(m, &m.channel, Message::new(1, 7, &[])), Ok(()));
+        })));
+        m.run(SERVER, |m| {
+            let msg = receive(m, &m.channel).unwrap();
+            assert_eq!(msg.tag, 7);
+        });
+    }
+
+    #[test]
+    fn try_send_full_queue_returns_full() {
+        // Fill the queue, then try_send must return Err(Full), not block.
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        m.run(CLIENT, |m| {
+            for tag in 0..QUEUE_CAP as u32 {
+                send(m, &m.channel, Message::new(1, tag, &[])).unwrap();
+            }
+        });
+        // The queue is full: try_send returns Err(Full) without blocking.
+        assert_eq!(
+            try_send(&m, &m.channel, Message::new(1, 99, &[])),
+            Err(IpcErr::Full),
+            "full queue: try_send must return Full, not block"
+        );
+        assert!(m.blocks.borrow().is_empty(), "try_send must not block (no block calls)");
+    }
+
+    #[test]
+    fn try_send_no_pi() {
+        // The sender is the kernel (no current process): no boost fires.
+        let m = Mock::new(&[16, 200, 128, 128], Channel::new(CLIENT));
+        m.on_block.replace(Some(Rc::new(|m: &Mock| {
+            // The "interrupt" arrives while the server (level 200) is blocked.
+            // The client (level 16) is not the current process, so no PI.
+            assert_eq!(try_send(m, &m.channel, Message::new(1, 1, &[])), Ok(()));
+        })));
+        m.run(SERVER, |m| {
+            let _ = receive(m, &m.channel).unwrap();
+        });
+        assert!(
+            m.boosts.borrow().is_empty(),
+            "try_send must not boost (no client priority); boosts: {:?}",
+            m.boosts.borrow()
+        );
+    }
+
+    #[test]
+    fn try_send_closed_channel_returns_closed() {
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        m.run(CLIENT, |m| {
+            close(m, &m.channel);
+        });
+        assert_eq!(
+            try_send(&m, &m.channel, Message::new(1, 1, &[])),
+            Err(IpcErr::Closed),
+            "closed channel: try_send must return Closed"
+        );
     }
 }

@@ -79,6 +79,12 @@ pub const SYCRECEIVE: u64 = 17;
 /// returns an error and sends nothing.
 pub const SYCREPLY: u64 = 18;
 
+/// x8 value to claim a hardware interrupt for the current process: x0 = INTID,
+/// x1 = channel handle.  The kernel adds the routing table entry and enables
+/// the interrupt at the GIC distributor.  The result is in x0 (0 on success,
+/// an error code on failure).  The process continues.
+pub const SYSIRQCLAIM: u64 = 19;
+
 /// The exit status a faulted process is marked with: distinct from a clean
 /// exit (which uses the svc number, 0–15 in the test images), so an image can
 /// tell a fault-death from a clean exit.
