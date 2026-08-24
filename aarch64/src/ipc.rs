@@ -121,7 +121,7 @@ pub fn create() -> ChannelHandle {
 
 /// The channel for `handle`, if it has been created.
 #[cfg(target_os = "none")]
-fn channel(handle: ChannelHandle) -> Option<&'static Channel> {
+pub fn channel(handle: ChannelHandle) -> Option<&'static Channel> {
     if handle >= NCHANNELS || handle >= NUSED.load(Ordering::Acquire) {
         return None;
     }
@@ -132,7 +132,7 @@ fn channel(handle: ChannelHandle) -> Option<&'static Channel> {
 /// TPIDR.  `block` is always of the current process (the one in the blocking
 /// syscall); `wake`/`boost`/`unboost` are by id.
 #[cfg(target_os = "none")]
-pub(crate) struct KernSched;
+pub struct KernSched;
 
 #[cfg(target_os = "none")]
 impl IpcScheduler for KernSched {
@@ -248,7 +248,7 @@ pub fn route(intid: u16) -> Option<&'static Channel> {
 /// not already claimed.  It adds the routing table entry and enables the
 /// interrupt at the GIC distributor.  Returns the x0 result code.
 #[cfg(target_os = "none")]
-pub(crate) fn sys_irq_claim(intid: u64, handle: u64) -> u64 {
+pub fn sys_irq_claim(intid: u64, handle: u64) -> u64 {
     // The INTID must be in the SPI range (32..=1019 on GICv2).
     let intid = match intid.try_into() {
         Ok(i) if (INTID_SPI_MIN..=INTID_SPI_MAX).contains(&i) => i,
@@ -364,6 +364,11 @@ pub(crate) fn sys_reply(_handle: u64, _buf: *const u8, _len: u64, _opcode: u64, 
 
 #[cfg(not(target_os = "none"))]
 pub fn route(_intid: u16) -> Option<&'static ()> {
+    None
+}
+
+#[cfg(not(target_os = "none"))]
+pub fn channel(_handle: u32) -> Option<&'static ()> {
     None
 }
 
