@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["aarch64", "x86_64", "port", "riscv64", "xtask"]
+members = ["aarch64", "x86_64", "port", "riscv64", "xtask", "servers/console"]
 
 [workspace.lints.rust]
 # Kernel code must spell out every unsafe operation, even inside an unsafe fn.

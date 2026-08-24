@@ -560,11 +560,11 @@ fn spawn_raw(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     install(aspace, text_va, user_sp)
 }
 
-/// The image base a server is linked at (`--image-base`): page-aligned, in
-/// the TTBR0/user half.  A stated convention, not a knob — a segment placed
-/// below it is rejected by the placement check in `spawn_elf`.
+/// The image base a server is linked at: the shared [`port::user::IMAGE_BASE`],
+/// which the build's `--image-base` also reads, so the two cannot drift.  A
+/// segment placed below it is rejected by the placement check in `spawn_elf`.
 #[cfg(target_os = "none")]
-const ELF_BASE: usize = 0x10_0000;
+const ELF_BASE: usize = port::user::IMAGE_BASE;
 /// The user stack's size, in pages: the same 64 KiB as a kstack, mapped
 /// immediately above the highest loaded segment.  A software convention, not
 /// a hardware fact.
@@ -582,67 +582,96 @@ fn spawn_elf(bytes: &[u8]) -> ProcessId {
     let segs = image.segments();
 
     // Placement is arch-specific and the loader's to check: each segment must
-    // be page-aligned, in the user half (`vaddr < KZERO`), at or above the
-    // image base, and non-overlapping a prior segment.  An embedded ELF is
-    // still input — a malformed or mis-linked one is rejected, not mapped into
-    // kernel space or on top of itself.
-    let mut top = 0usize; // the highest mapped VA, for the stack below
+    // be at or above the image base, and its page span must lie in the user
+    // half (`< KZERO`) without overlapping a prior segment's.  A segment need
+    // not be page-aligned — a static ELF places it wherever the linker chose —
+    // so the loader maps the containing pages.  An embedded ELF is still input:
+    // a malformed or mis-linked one is rejected, not mapped into kernel space
+    // or on top of itself.
+    let mut top = 0usize; // the highest mapped page, for the stack below
     for (i, seg) in segs.iter().enumerate() {
-        let start = seg.vaddr as usize;
-        if !start.is_multiple_of(mem::PAGE_SIZE_4K) {
-            panic!("elf: segment {i} is not page-aligned: {start:#x}");
+        let vaddr = seg.vaddr as usize;
+        if vaddr < ELF_BASE {
+            panic!("elf: segment {i} is below the image base: {vaddr:#x}");
         }
-        if start >= crate::param::KZERO {
-            panic!("elf: segment {i} is outside the user half: {start:#x}");
-        }
-        if start < ELF_BASE {
-            panic!("elf: segment {i} is below the image base: {start:#x}");
-        }
-        let end = start
+        let end = vaddr
             .checked_add(seg.memsz as usize)
             .unwrap_or_else(|| panic!("elf: segment {i} size overflows the address space"));
+        let page_lo = vaddr & !(mem::PAGE_SIZE_4K - 1);
+        let page_hi = (end + mem::PAGE_SIZE_4K - 1) & !(mem::PAGE_SIZE_4K - 1);
+        if page_hi >= crate::param::KZERO {
+            panic!("elf: segment {i} is outside the user half: {page_hi:#x}");
+        }
         for prev in &segs[..i] {
-            let pstart = prev.vaddr as usize;
-            let pend = pstart + prev.memsz as usize;
-            if start < pend && pstart < end {
-                panic!("elf: segments overlap: {start:#x} and {pstart:#x}");
+            let pv = prev.vaddr as usize;
+            let pend = pv + prev.memsz as usize;
+            let p_lo = pv & !(mem::PAGE_SIZE_4K - 1);
+            let p_hi = (pend + mem::PAGE_SIZE_4K - 1) & !(mem::PAGE_SIZE_4K - 1);
+            if page_lo < p_hi && p_lo < page_hi {
+                panic!("elf: segments overlap: {vaddr:#x} and {pv:#x}");
             }
         }
-        if end > top {
-            top = end;
+        if page_hi > top {
+            top = page_hi;
         }
     }
 
-    // Map each segment into a fresh AS (its TTBR0 root), zero every page, and
-    // copy the file bytes over the zeros (the bss and the last page's tail
-    // stay zero).  `map_user_page` returns the kernel pointer (the identity VA
-    // in TTBR1) — the kernel runs in TTBR1 and cannot write through the user
-    // VA — so the copy goes through it, page by page.
+    // The entry point must land in a mapped, executable segment: a valid
+    // static ELF's `e_entry` is the linker's `start` symbol, in the text.
+    // Given the segment checks above, this implies it is in the user half at
+    // or above the image base; a malformed ELF whose entry floats in a gap or
+    // in kernel space is rejected, not started at an unmapped or privileged VA.
+    let entry = image.entry as usize;
+    let in_segment = segs.iter().any(|seg| {
+        seg.exec && entry >= seg.vaddr as usize && entry < seg.vaddr as usize + seg.memsz as usize
+    });
+    if !in_segment {
+        panic!("elf: entry {entry:#x} is not in any segment");
+    }
+
+    // Map each segment's page span into a fresh AS (its TTBR0 root), zero
+    // every page, and copy the file bytes over the zeros (the bss and each
+    // page's unfiled tail stay zero).  A segment may start or end mid-page, so
+    // each page takes only the file bytes that fall inside it, at the
+    // page-internal offset.  `map_user_page` returns the kernel pointer (the
+    // identity VA in TTBR1) — the kernel runs in TTBR1 and cannot write through
+    // the user VA — so the copy goes through it, page by page.
     let aspace = crate::aspace::Aspace::new();
     for seg in segs {
         let entry = if seg.exec { Entry::rw_user_text() } else { Entry::rw_user_data() };
-        let start = seg.vaddr as usize;
-        let numpages = (seg.memsz as usize).div_ceil(mem::PAGE_SIZE_4K);
-        for page in 0..numpages {
+        let vaddr = seg.vaddr as usize;
+        let filesz = seg.filesz as usize;
+        let memsz = seg.memsz as usize;
+        let offset = seg.offset as usize;
+        let page_lo = vaddr & !(mem::PAGE_SIZE_4K - 1);
+        let page_hi = (vaddr + memsz + mem::PAGE_SIZE_4K - 1) & !(mem::PAGE_SIZE_4K - 1);
+        let mut page = page_lo;
+        while page < page_hi {
             let kptr = aspace
-                .map_user_page(entry, start + page * mem::PAGE_SIZE_4K)
+                .map_user_page(entry, page)
                 .unwrap_or_else(|err| panic!("elf: segment page: {err:?}"));
             // SAFETY: kptr is a freshly mapped page, valid and kernel-writable;
             // a full 4 KiB page fits.
             unsafe { core::ptr::write_bytes(kptr, 0, mem::PAGE_SIZE_4K) };
-            // This page's share of the file bytes, if any (the segment's file
-            // bytes are at bytes[seg.offset .. seg.offset + seg.filesz]).
-            let lo = (page * mem::PAGE_SIZE_4K) as u64;
-            let hi = core::cmp::min(seg.filesz, lo + mem::PAGE_SIZE_4K as u64);
-            if lo < hi {
-                let n = (hi - lo) as usize;
-                let src =
-                    &bytes[seg.offset as usize + lo as usize..seg.offset as usize + hi as usize];
-                // SAFETY: kptr is the just-mapped page, valid and writable, and
-                // n bytes fit in the 4 KiB page (n <= the page size); the source
-                // is in-bounds (the reader verified offset + filesz <= len).
-                unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), kptr, n) };
+            // This page's share of the file bytes: the segment's bytes are at
+            // VA [vaddr, vaddr + filesz) and file [offset, offset + filesz);
+            // copy whatever falls within this page, at the page-internal
+            // offset.
+            let va_lo = core::cmp::max(page, vaddr);
+            let va_hi = core::cmp::min(page + mem::PAGE_SIZE_4K, vaddr + filesz);
+            if va_lo < va_hi {
+                let n = va_hi - va_lo;
+                // SAFETY: `va_lo - page` is the offset within this page (0 to
+                // the page size), so the result points inside the mapped page.
+                let dst = unsafe { kptr.add(va_lo - page) };
+                let src = &bytes[offset + (va_lo - vaddr)..offset + (va_hi - vaddr)];
+                // SAFETY: dst is within the just-mapped page (va_lo - page +
+                // n <= the page size); the source slice is in-bounds (the
+                // reader verified offset + filesz <= len, and va_hi - vaddr
+                // <= filesz).
+                unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst, n) };
             }
+            page += mem::PAGE_SIZE_4K;
         }
     }
 

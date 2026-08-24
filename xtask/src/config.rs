@@ -263,8 +263,9 @@ fn apply_rustflags(cmd: &mut Command, rustflags: &[String]) {
 }
 
 /// Render `s` as a TOML basic string, escaping the two characters TOML
-/// gives meaning inside one.
-fn toml_basic_string(s: &str) -> String {
+/// gives meaning inside one.  `pub(crate)` so a step that passes its own
+/// rustflags (the server build) can build a `build.rustflags` the same way.
+pub(crate) fn toml_basic_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 

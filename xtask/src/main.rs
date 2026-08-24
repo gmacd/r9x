@@ -416,6 +416,11 @@ impl BuildStep {
         cmd.current_dir(workspace());
         cmd.arg("--workspace");
         cmd.arg("--exclude").arg("xtask");
+        // The servers are separate user-space executables, not part of the
+        // kernel image; the ServerStep builds them (aarch64 only, where the
+        // loader's per-process Aspace exists).  Excluding them here also keeps
+        // the aarch64-only server out of the other arches' image builds.
+        cmd.arg("--exclude").arg("console");
         exclude_other_arches(self.arch, &mut cmd);
         if self.profile == Profile::Release {
             cmd.arg("--release");
@@ -605,6 +610,8 @@ impl QemuStep {
         let image_path = if self.image.is_empty() {
             None
         } else {
+            // A server-embedding image needs the server's ELF built first.
+            ServerStep::new(self.arch, self.profile, self.verbose).run()?;
             let runner = ArchIntegrationTests {
                 arch: self.arch,
                 config: self.config.clone(),
@@ -935,6 +942,11 @@ impl ClippyStep {
         let mut cmd = self.command();
         cmd.arg("--workspace");
         exclude_other_arches(self.arch, &mut cmd);
+        // The server is aarch64-only; on the other arches it would not build,
+        // so it is excluded there and linted only by the aarch64 clippy.
+        if self.arch != Arch::Aarch64 {
+            cmd.arg("--exclude").arg("console");
+        }
         self.lint(cmd)?;
 
         // Tests and benches are separate targets and are not covered above.
@@ -963,6 +975,9 @@ impl ClippyStep {
         // a host, where a no_std kernel image cannot compile.  They are
         // named one at a time because --tests would also ask for the lib
         // unit tests, which need libtest and so need a host.
+        // A server-embedding image's build.rs stages the server's ELF; build
+        // it before linting so such an image finds it.
+        ServerStep::new(self.arch, self.profile, self.verbose).run()?;
         for name in IntegrationTestStep::test_names(self.arch)? {
             let mut cmd = self.command();
             cmd.arg("--package").arg(&package);
@@ -992,6 +1007,93 @@ impl ClippyStep {
         }
         if !annotated_status(&mut cmd)?.success() {
             return Err("clippy failed".into());
+        }
+        Ok(())
+    }
+}
+
+/// Build the user-space server (`servers/console`) into a stable ELF path.
+///
+/// The server is a static, non-PIE, fixed-base ELF linked at
+/// [`port::user::IMAGE_BASE`] with its `start` symbol as the entry — the
+/// format the loader's `Image::Elf` arm reads.  It is aarch64-only for the
+/// arc (the per-process `Aspace` the loader needs has only landed for
+/// aarch64); the other arches' servers appear when their `Aspace` lands.
+///
+/// Wired ahead of the steps that build server-embedding images (the
+/// integration test, a named `qemu --image`, and the per-test clippy/check
+/// passes): cargo's mtime caching makes a re-run with an unchanged server a
+/// no-op, so this ordering is what makes the "server before image" dependency
+/// hold — the embedding image's `build.rs` reruns only when the ELF changes.
+struct ServerStep {
+    arch: Arch,
+    profile: Profile,
+    verbose: bool,
+}
+
+impl ServerStep {
+    fn new(arch: Arch, profile: Profile, verbose: bool) -> Self {
+        Self { arch, profile, verbose }
+    }
+
+    /// The staged server ELF, or none if this arch has no server.  Every
+    /// consumer of the ELF (the embedding image's `build.rs`, task 4) stages
+    /// and tracks this one path.
+    fn elf(&self) -> Option<PathBuf> {
+        (self.arch == Arch::Aarch64).then(|| {
+            target_dir().join(self.arch.target()).join(self.profile.dir()).join("console.elf")
+        })
+    }
+
+    fn run(self) -> Result<()> {
+        let Some(elf) = self.elf() else {
+            return Ok(());
+        };
+        let mut cmd = Command::new(cargo());
+        cmd.current_dir(workspace());
+        cmd.arg("build");
+        cmd.arg("-p").arg("console");
+        cmd.arg("--target").arg(format!("lib/{}.json", self.arch.target()));
+        if self.profile == Profile::Release {
+            cmd.arg("--release");
+        }
+        cmd.arg("-Z").arg("build-std=core");
+        cmd.arg("-Z").arg("json-target-spec");
+        // The user-binary format: static, non-PIE, fixed-base.  The base is
+        // the shared `port::user::IMAGE_BASE` the loader's placement check
+        // reads, so build and loader cannot drift.  `--image-base` sets the
+        // fixed base; `-e start` names the entry symbol, so the ELF's
+        // `e_entry` is the server's `start`.
+        let base = format!("0x{:x}", port::user::IMAGE_BASE);
+        let flags = [
+            "-Crelocation-model=static",
+            &format!("-Clink-arg=--image-base={base}"),
+            "-Clink-arg=-estart",
+        ];
+        cmd.arg("--config").arg(format!(
+            "build.rustflags=[{}]",
+            flags.iter().map(|f| config::toml_basic_string(f)).collect::<Vec<_>>().join(",")
+        ));
+        if self.verbose {
+            println!("Executing {cmd:?}");
+        }
+        let status = annotated_status(&mut cmd)?;
+        if !status.success() {
+            return Err("build server failed".into());
+        }
+        // The built bin (named after the package) is the ELF.  Stage it at the
+        // stable, extensioned name above, but only when it is newer than the
+        // staged copy (or the copy is absent): a re-run with an unchanged
+        // server then leaves the staged ELF's mtime alone, so the embedding
+        // image is not rebuilt needlessly.
+        let built = elf.with_file_name("console");
+        let newer = |p: &Path| p.metadata().and_then(|m| m.modified()).ok();
+        let restage = match (newer(&built), newer(&elf)) {
+            (Some(b), Some(e)) => b > e,
+            _ => true,
+        };
+        if restage {
+            std::fs::copy(&built, &elf).map_err(|e| format!("stage {elf:?}: {e}"))?;
         }
         Ok(())
     }
@@ -1089,6 +1191,12 @@ impl CheckStep {
                     QEMU_TEST_FEATURE.to_string(),
                 ]);
             }
+        }
+
+        // A server-embedding image's build.rs stages the server's ELF; build
+        // it before the per-test check passes so such an image finds it.
+        for arch in Arch::ALL {
+            ServerStep::new(arch, Profile::Debug, self.verbose).run()?;
         }
 
         for cmd_args in
@@ -1214,6 +1322,11 @@ impl IntegrationTestStep {
                 println!("{arch}: no integration tests");
                 continue;
             }
+
+            // A server-embedding image needs the server's ELF, built before it
+            // compiles (cargo's mtime caching makes an unchanged server a
+            // no-op).
+            ServerStep::new(arch, self.profile, self.verbose).run()?;
 
             let runner = ArchIntegrationTests {
                 arch,
