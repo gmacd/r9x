@@ -82,7 +82,11 @@ pub extern "C" fn main9(dtb_va: usize) {
     enable_pl011(&dt);
     println!("pl011 enabled (kernel side)");
 
-    let server = process::spawn(&SERVER_TEXT, SERVER_TEXT_VA, SERVER_STACK_VA);
+    let server = process::spawn(&process::Image::Raw {
+        text: &SERVER_TEXT,
+        text_va: SERVER_TEXT_VA,
+        stack_va: SERVER_STACK_VA,
+    });
     println!("server spawned, running");
 
     process::run_all();

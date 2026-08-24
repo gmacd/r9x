@@ -94,9 +94,21 @@ pub extern "C" fn main9(dtb_va: usize) {
     }
 
     println!("spawning three yielding processes");
-    let l = process::spawn(&PROG_L, L_TEXT_VA, L_STACK_VA);
-    let m = process::spawn(&PROG_M, M_TEXT_VA, M_STACK_VA);
-    let h = process::spawn(&PROG_H, H_TEXT_VA, H_STACK_VA);
+    let l = process::spawn(&process::Image::Raw {
+        text: &PROG_L,
+        text_va: L_TEXT_VA,
+        stack_va: L_STACK_VA,
+    });
+    let m = process::spawn(&process::Image::Raw {
+        text: &PROG_M,
+        text_va: M_TEXT_VA,
+        stack_va: M_STACK_VA,
+    });
+    let h = process::spawn(&process::Image::Raw {
+        text: &PROG_H,
+        text_va: H_TEXT_VA,
+        stack_va: H_STACK_VA,
+    });
 
     // H is the process a high-priority waiter would boost (stage 2 does
     // this on a blocking send; here it is a manual kernel-side call, the

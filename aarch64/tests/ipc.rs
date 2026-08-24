@@ -174,9 +174,21 @@ pub extern "C" fn main9(dtb_va: usize) {
     println!("spawning client, server, busy");
     // The server is spawned first: it is picked first (lowest index) and
     // blocks in receive, so the client's first send is the fast path.
-    let server = process::spawn(&server_body(), SERVER_TEXT_VA, SERVER_STACK_VA);
-    let client = process::spawn(&client_body(), CLIENT_TEXT_VA, CLIENT_STACK_VA);
-    let busy = process::spawn(&busy_body(), BUSY_TEXT_VA, BUSY_STACK_VA);
+    let server = process::spawn(&process::Image::Raw {
+        text: &server_body(),
+        text_va: SERVER_TEXT_VA,
+        stack_va: SERVER_STACK_VA,
+    });
+    let client = process::spawn(&process::Image::Raw {
+        text: &client_body(),
+        text_va: CLIENT_TEXT_VA,
+        stack_va: CLIENT_STACK_VA,
+    });
+    let busy = process::spawn(&process::Image::Raw {
+        text: &busy_body(),
+        text_va: BUSY_TEXT_VA,
+        stack_va: BUSY_STACK_VA,
+    });
 
     process::set_priority(client, process::Priority::new(16));
     process::set_priority(server, process::Priority::new(200));

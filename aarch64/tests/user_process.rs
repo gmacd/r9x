@@ -55,7 +55,11 @@ pub extern "C" fn main9(dtb_va: usize) {
     // If the switch-back were broken, the resume would fault or
     // wander before this line runs at all.
     println!("starting first process");
-    let id = process::spawn(&SYSCALL_EXIT, USER_TEXT_VA, USER_STACK_VA);
+    let id = process::spawn(&process::Image::Raw {
+        text: &SYSCALL_EXIT,
+        text_va: USER_TEXT_VA,
+        stack_va: USER_STACK_VA,
+    });
     process::run_all();
     let status = process::status(id);
     println!("first process returned, status {status:?}");

@@ -61,8 +61,16 @@ pub extern "C" fn main9(dtb_va: usize) {
     // Both at the same VAs: A's exit drives resched to B; B's exit
     // unwinds run_all.
     println!("spawning two processes at the same VAs");
-    let a = process::spawn(&PROG_A, TEXT_VA, STACK_VA);
-    let b = process::spawn(&PROG_B, TEXT_VA, STACK_VA);
+    let a = process::spawn(&process::Image::Raw {
+        text: &PROG_A,
+        text_va: TEXT_VA,
+        stack_va: STACK_VA,
+    });
+    let b = process::spawn(&process::Image::Raw {
+        text: &PROG_B,
+        text_va: TEXT_VA,
+        stack_va: STACK_VA,
+    });
 
     println!("running the table");
     process::run_all();

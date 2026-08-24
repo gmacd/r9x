@@ -500,27 +500,47 @@ unsafe fn tpidr_set(p: *mut Process) {
 /// A process id: an index into the table.
 pub type ProcessId = usize;
 
-/// Start a process: map its text and stack pages into the user table,
-/// fabricate its entry frame and `Context` on its kstack, and put it
-/// in the table as Runnable.  Returns the slot.
+/// A loadable process image: raw machine code at a fixed layout, or a
+/// self-describing ELF.  The two are the only ways a process starts; `spawn`
+/// is the single entry point over both (the user-binary-loading plan,
+/// decision 2 — an early-call unification).  Defined unconditionally (plain
+/// data) so the host build sees it too.
+pub enum Image<'a> {
+    /// Raw machine code: `text` placed at `text_va`, the stack at `stack_va`.
+    /// The caller owns the layout (the simple test images).
+    Raw { text: &'a [u8], text_va: usize, stack_va: usize },
+    /// A self-describing ELF: layout (segments, entry, sizes) comes from the
+    /// header; the stack is derived above the highest segment (the servers).
+    Elf(&'a [u8]),
+}
+
+/// Start a process from an image, mapping its pages into a fresh per-process
+/// address space, fabricating its entry frame and `Context` on its kstack,
+/// and putting it in the table as Runnable.  Returns the slot.
 ///
-/// The entry `Context` erets into the vector tail (`trapret`) with sp
-/// = the frame's base, the same path every later switch-in takes: the
-/// tail stages SPSR/ELR/SP_EL0 from the frame and `eret`s.  The
-/// process thus starts at the frame's ELR (the text VA) with x30 = 0,
-/// not the `trapret` label.
+/// The entry `Context` erets into the vector tail (`trapret`) with sp = the
+/// frame's base, the same path every later switch-in takes: the tail stages
+/// SPSR/ELR/SP_EL0 from the frame and `eret`s.  The process thus starts at
+/// the frame's ELR with x30 = 0, not the `trapret` label.
 ///
 /// # Panics
 ///
-/// On allocation failure or a full table: callers are init-context
-/// (`main9`, the test images), where a panic is the failure report.
+/// On a malformed ELF (the `Image::Elf` arm) or a bad segment placement, an
+/// allocation failure, or a full table: callers are init-context (`main9`,
+/// the test images), where a panic is the failure report.
 #[cfg(target_os = "none")]
-pub fn spawn(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
-    // Allocations run outside the table lock: the lock guards the
-    // table, not the page allocator.
-    // The process's address space: its TTBR0 root.  The text and stack are
-    // mapped into this AS (not the shared user table), so each process has
-    // its own tables — the isolation property a wild write cannot cross.
+pub fn spawn(image: &Image) -> ProcessId {
+    match image {
+        Image::Raw { text, text_va, stack_va } => spawn_raw(text, *text_va, *stack_va),
+        Image::Elf(bytes) => spawn_elf(bytes),
+    }
+}
+
+/// The `Image::Raw` arm: map one page of `text` at `text_va` and one stack
+/// page at `stack_va`, starting the process at `text_va`.  The simple test
+/// images' path; behaviour is unchanged from the pre-`Image` `spawn`.
+#[cfg(target_os = "none")]
+fn spawn_raw(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     let aspace = crate::aspace::Aspace::new();
     let user_text = aspace
         .map_user_page(Entry::rw_user_text(), text_va)
@@ -534,15 +554,126 @@ pub fn spawn(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     let _user_stack = aspace
         .map_user_page(Entry::rw_user_data(), stack_va)
         .unwrap_or_else(|err| panic!("process stack page: {err:?}"));
+    // The user stack pointer leaves 16 bytes of headroom below the page's top
+    // (the frame's SP must stay inside the page — see forkret_context).
+    let user_sp = stack_va + mem::PAGE_SIZE_4K - 16;
+    install(aspace, text_va, user_sp)
+}
+
+/// The image base a server is linked at (`--image-base`): page-aligned, in
+/// the TTBR0/user half.  A stated convention, not a knob — a segment placed
+/// below it is rejected by the placement check in `spawn_elf`.
+#[cfg(target_os = "none")]
+const ELF_BASE: usize = 0x10_0000;
+/// The user stack's size, in pages: the same 64 KiB as a kstack, mapped
+/// immediately above the highest loaded segment.  A software convention, not
+/// a hardware fact.
+#[cfg(target_os = "none")]
+const STACK_PAGES: usize = 16;
+
+/// The `Image::Elf` arm: load a self-describing static ELF.  Parse it, validate
+/// each segment's placement (arch-specific — the `port::elf` reader checks
+/// structure only), map the segments into a fresh `Aspace` (executable text vs.
+/// data), copy the file bytes and zero the bss, map the stack above the
+/// highest segment, and start the process at `e_entry`.
+#[cfg(target_os = "none")]
+fn spawn_elf(bytes: &[u8]) -> ProcessId {
+    let image = port::elf::parse(bytes).unwrap_or_else(|err| panic!("elf: {err:?}"));
+    let segs = image.segments();
+
+    // Placement is arch-specific and the loader's to check: each segment must
+    // be page-aligned, in the user half (`vaddr < KZERO`), at or above the
+    // image base, and non-overlapping a prior segment.  An embedded ELF is
+    // still input — a malformed or mis-linked one is rejected, not mapped into
+    // kernel space or on top of itself.
+    let mut top = 0usize; // the highest mapped VA, for the stack below
+    for (i, seg) in segs.iter().enumerate() {
+        let start = seg.vaddr as usize;
+        if !start.is_multiple_of(mem::PAGE_SIZE_4K) {
+            panic!("elf: segment {i} is not page-aligned: {start:#x}");
+        }
+        if start >= crate::param::KZERO {
+            panic!("elf: segment {i} is outside the user half: {start:#x}");
+        }
+        if start < ELF_BASE {
+            panic!("elf: segment {i} is below the image base: {start:#x}");
+        }
+        let end = start
+            .checked_add(seg.memsz as usize)
+            .unwrap_or_else(|| panic!("elf: segment {i} size overflows the address space"));
+        for prev in &segs[..i] {
+            let pstart = prev.vaddr as usize;
+            let pend = pstart + prev.memsz as usize;
+            if start < pend && pstart < end {
+                panic!("elf: segments overlap: {start:#x} and {pstart:#x}");
+            }
+        }
+        if end > top {
+            top = end;
+        }
+    }
+
+    // Map each segment into a fresh AS (its TTBR0 root), zero every page, and
+    // copy the file bytes over the zeros (the bss and the last page's tail
+    // stay zero).  `map_user_page` returns the kernel pointer (the identity VA
+    // in TTBR1) — the kernel runs in TTBR1 and cannot write through the user
+    // VA — so the copy goes through it, page by page.
+    let aspace = crate::aspace::Aspace::new();
+    for seg in segs {
+        let entry = if seg.exec { Entry::rw_user_text() } else { Entry::rw_user_data() };
+        let start = seg.vaddr as usize;
+        let numpages = (seg.memsz as usize).div_ceil(mem::PAGE_SIZE_4K);
+        for page in 0..numpages {
+            let kptr = aspace
+                .map_user_page(entry, start + page * mem::PAGE_SIZE_4K)
+                .unwrap_or_else(|err| panic!("elf: segment page: {err:?}"));
+            // SAFETY: kptr is a freshly mapped page, valid and kernel-writable;
+            // a full 4 KiB page fits.
+            unsafe { core::ptr::write_bytes(kptr, 0, mem::PAGE_SIZE_4K) };
+            // This page's share of the file bytes, if any (the segment's file
+            // bytes are at bytes[seg.offset .. seg.offset + seg.filesz]).
+            let lo = (page * mem::PAGE_SIZE_4K) as u64;
+            let hi = core::cmp::min(seg.filesz, lo + mem::PAGE_SIZE_4K as u64);
+            if lo < hi {
+                let n = (hi - lo) as usize;
+                let src =
+                    &bytes[seg.offset as usize + lo as usize..seg.offset as usize + hi as usize];
+                // SAFETY: kptr is the just-mapped page, valid and writable, and
+                // n bytes fit in the 4 KiB page (n <= the page size); the source
+                // is in-bounds (the reader verified offset + filesz <= len).
+                unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), kptr, n) };
+            }
+        }
+    }
+
+    // The stack: STACK_PAGES pages immediately above the highest segment
+    // (page-aligned up, so it is clear of every mapped page).
+    let stack_base = (top + mem::PAGE_SIZE_4K - 1) & !(mem::PAGE_SIZE_4K - 1);
+    for page in 0..STACK_PAGES {
+        let _kptr = aspace
+            .map_user_page(Entry::rw_user_data(), stack_base + page * mem::PAGE_SIZE_4K)
+            .unwrap_or_else(|err| panic!("elf: stack page: {err:?}"));
+    }
+    let user_sp = stack_base + STACK_PAGES * mem::PAGE_SIZE_4K - 16;
+    install(aspace, image.entry as usize, user_sp)
+}
+
+/// Claim a free slot and store a new process with the given `Aspace`, entry
+/// point (`elr`), and user stack pointer (`user_sp`).  Shared by the raw and
+/// ELF spawn arms: the only difference between them is how the `Aspace` is
+/// built and what the entry/stack point at.  Called after the `Aspace` is
+/// fully built (the page allocs already ran, outside the table lock).
+#[cfg(target_os = "none")]
+fn install(aspace: crate::aspace::Aspace, elr: usize, user_sp: usize) -> ProcessId {
     let node = LockNode::new();
     // A slot is free when it is empty or already Exited: reclaiming is
     // lazy, and a slot is never overwritten while a raw pointer to its
-    // process is live (module docs).  Finding and claiming the slot
-    // and fabricating the kstack frame are one critical section: two
-    // concurrent spawns must never pick the same slot and interleave
-    // frame writes into the same kstack.  The frame writes are plain
-    // stores, so holding the table lock across them costs nothing the
-    // allocator lock already does not.
+    // process is live (module docs).  Finding and claiming the slot and
+    // fabricating the kstack frame are one critical section: two concurrent
+    // spawns must never pick the same slot and interleave frame writes into
+    // the same kstack.  The frame writes are plain stores, so holding the
+    // table lock across them costs nothing the allocator lock already does
+    // not.
     let mut table = TABLE.lock(&node);
     let id = table.iter().position(|slot| match slot {
         None => true,
@@ -552,7 +683,7 @@ pub fn spawn(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
         panic!("proc: no free slot: all {NPROCS} slots are Running or Runnable")
     };
     let kstack = unsafe { KSTACKS.stacks.get().cast::<u8>().add(id * KSTACK_SZ) };
-    let context = forkret_context(id, text_va, stack_va);
+    let context = forkret_context(id, elr, user_sp);
     let proc = Process {
         state: State::Runnable,
         context,
@@ -568,9 +699,13 @@ pub fn spawn(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
 /// Fabricate a process's entry frame and `Context` on its kstack.
 ///
 /// The frame sits at the kstack's top (304 bytes); the `Context` (112)
-/// sits directly below it.  The canary goes at the base.
+/// sits directly below it.  The canary goes at the base.  `elr` is where the
+/// process starts (the text VA for `Image::Raw`, `e_entry` for `Image::Elf`)
+/// and `user_sp` is its user stack pointer (the caller has already left 16
+/// bytes of headroom below the stack's top, so an EL0 store to `[sp, #8]`
+/// stays inside the stack).
 #[cfg(target_os = "none")]
-fn forkret_context(id: usize, text_va: usize, stack_va: usize) -> *mut Context {
+fn forkret_context(id: usize, elr: usize, user_sp: usize) -> *mut Context {
     let kstack = unsafe { KSTACKS.stacks.get().cast::<u8>().add(id * KSTACK_SZ) };
     let top = kstack as usize + KSTACK_SZ;
 
@@ -589,12 +724,9 @@ fn forkret_context(id: usize, text_va: usize, stack_va: usize) -> *mut Context {
         // The frame's fields the tail will stage: ELR = where the
         // process starts, sp = its user stack, SPSR = 0 (EL0, SP0,
         // IRQs unmasked: the process enters with IRQs on, as the
-        // single-process arc did).  The user stack pointer leaves 16
-        // bytes of headroom below the page's top: an EL0 store to
-        // [sp, #8] must stay inside the page.
-        let user_sp = stack_va + mem::PAGE_SIZE_4K - 16;
+        // single-process arc did).
         let frame = frame_base as *mut u8;
-        frame.add(FRAME_ELR).cast::<u64>().write(text_va as u64);
+        frame.add(FRAME_ELR).cast::<u64>().write(elr as u64);
         frame.add(FRAME_SP).cast::<u64>().write(user_sp as u64);
         frame.add(FRAME_SPSR).cast::<u64>().write(0);
 
@@ -1054,7 +1186,7 @@ pub(crate) fn current_aspace() -> Option<&'static crate::aspace::Aspace> {
 // Host (unit-test) builds have no table, no kstacks, and no switch;
 // the constants above are what they exercise.
 #[cfg(not(target_os = "none"))]
-pub fn spawn(_text: &[u8], _text_va: usize, _stack_va: usize) -> ProcessId {
+pub fn spawn(_image: &Image) -> ProcessId {
     loop {
         core::hint::spin_loop();
     }

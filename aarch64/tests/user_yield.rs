@@ -113,7 +113,11 @@ pub extern "C" fn main9(dtb_va: usize) {
     }
 
     println!("starting yield process");
-    let id = process::spawn(&YIELD_PROGRAM, USER_TEXT_VA, USER_STACK_VA);
+    let id = process::spawn(&process::Image::Raw {
+        text: &YIELD_PROGRAM,
+        text_va: USER_TEXT_VA,
+        stack_va: USER_STACK_VA,
+    });
     process::run_all();
     let status = process::status(id);
     println!("yield process returned, status {status:?}");

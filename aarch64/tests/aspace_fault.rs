@@ -55,8 +55,10 @@ pub extern "C" fn main9(dtb_va: usize) {
     // A faults on the `str`; the kernel kills it with FAULT_STATUS and
     // reschedules to B.  B exits cleanly with 5.
     println!("spawning a faulting process and a peer");
-    let a = process::spawn(&PROG_A, 0x1000, 0x10000);
-    let b = process::spawn(&PROG_B, 0x2000, 0x20000);
+    let a =
+        process::spawn(&process::Image::Raw { text: &PROG_A, text_va: 0x1000, stack_va: 0x10000 });
+    let b =
+        process::spawn(&process::Image::Raw { text: &PROG_B, text_va: 0x2000, stack_va: 0x20000 });
 
     println!("running the table");
     process::run_all();
