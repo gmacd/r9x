@@ -295,6 +295,15 @@ fn trap(frame: &mut TrapFrame) {
                 _ => process::exit_current(syscall),
             }
         }
+        // An EL0 data or instruction abort with a current process is a
+        // process fault: kill only that process (the isolation property).
+        // `process::fault` checks TPIDR; a fault with no current process is a
+        // kernel fault (it prints and spins inside).
+        Ok(ExceptionClass::DataAbortLowerEl | ExceptionClass::InstructionAbortLowerEl)
+            if exc == ExceptionType::SyncInvalidEL0_64 =>
+        {
+            process::fault(frame.far_el1, frame.esr_el1);
+        }
         _ => {
             // Synchronous exception (data abort, instruction abort, etc.)
             iprintln!("{:#?}", frame);

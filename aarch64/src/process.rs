@@ -79,6 +79,12 @@ pub const SYCRECEIVE: u64 = 17;
 /// returns an error and sends nothing.
 pub const SYCREPLY: u64 = 18;
 
+/// The exit status a faulted process is marked with: distinct from a clean
+/// exit (which uses the svc number, 0–15 in the test images), so an image can
+/// tell a fault-death from a clean exit.
+#[cfg(any(target_os = "none", test))]
+pub const FAULT_STATUS: u64 = 0xff;
+
 /// The trap frame's layout in trap.S, slot by slot.  `pub(crate)` and
 /// ungated because the host tests pin them to `TrapFrame`/`Context`:
 /// the layout is triple-maintained (the offsets spelled in trap.S,
@@ -908,6 +914,59 @@ fn switch_out(demote_to: State) -> bool {
     true
 }
 
+/// Kill the current process with a fault: a data or instruction abort in EL0.
+/// Prints the FAR/ESR and the faulting process's id, marks the process
+/// `Exited` with [`FAULT_STATUS`], and reschedules (the same path
+/// `exit_current` takes).  A fault with no current process (TPIDR null) is a
+/// kernel fault: print and spin.  This arc has no demand-paging, so every EL0
+/// fault is a kill (the fix path is a later change to this one function).
+#[cfg(target_os = "none")]
+pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1) -> ! {
+    let current = unsafe { tpidr_current() };
+    if current.is_null() {
+        iprintln!("EL0 fault with no process running: far {far:#x} esr {esr:?}");
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    let node = LockNode::new();
+    // The faulting process's id, for the report.
+    let current_id = {
+        let table = TABLE.lock(&node);
+        table
+            .iter()
+            .position(|slot| {
+                matches!(slot, Some(p) if (p as *const Process as *const ()) == (current as *const Process as *const ()))
+            })
+            .unwrap_or(0)
+    };
+    iprintln!("process {current_id} faulted: far {far:#x} esr {esr:?}");
+
+    {
+        let mut table = TABLE.lock(&node);
+        let Some(slot) =
+            table.iter_mut().find(|slot| matches!(slot, Some(p) if p.state == State::Running))
+        else {
+            panic!("fault: no Running process in the table");
+        };
+        let p = slot.as_mut().unwrap();
+        p.exit_status = FAULT_STATUS;
+        p.state = State::Exited;
+    }
+
+    if !resched() {
+        // No next Runnable: the last process.  Unwind run_all.
+        unsafe { tpidr_set(core::ptr::null_mut()) };
+        port::irq::exit_interrupt();
+        let starter = unsafe { core::ptr::read(starter_ctx_addr()) };
+        let mut slot: *mut Context = core::ptr::null_mut();
+        unsafe { swtch(&mut slot, starter, SPSR_EL1H | DAIF_MASKED) };
+        unreachable!("swtch resumed the discarded trap context");
+    }
+    unreachable!("resched switched to the next process");
+}
+
 /// Yield or preempt: switch to the next Runnable process, demoting the
 /// current one to Runnable (it is selectable again immediately).
 #[cfg(target_os = "none")]
@@ -985,6 +1044,13 @@ pub(crate) fn yield_current() {
 
 #[cfg(not(target_os = "none"))]
 pub(crate) fn exit_current(_status: u64) -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+pub(crate) fn fault(_far: u64, _esr: crate::reg::esr_el1::EsrEl1) -> ! {
     loop {
         core::hint::spin_loop();
     }

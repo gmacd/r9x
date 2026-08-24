@@ -88,5 +88,10 @@ name = "aspace"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "aspace_fault"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true
