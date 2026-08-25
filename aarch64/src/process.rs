@@ -1087,10 +1087,16 @@ fn switch_out(demote_to: State) -> bool {
         match next_id {
             None => {
                 // No next: the demotion was premature and the current
-                // process is still on CPU.  Put the state back to what
-                // it was — but only if we changed it; re-marking an
-                // Exited process Running would resurrect it.
-                if demoted && let Some(p) = table[current_id].as_mut() {
+                // process is still on CPU.  For a `Runnable` demotion
+                // (yield/preempt) put the state back — but only if we
+                // changed it; re-marking an Exited process Running would
+                // resurrect it.  For a `Blocked` demotion leave the state
+                // as Blocked: the caller (`block_current`) handles the
+                // all-blocked case by returning to the kernel.
+                if demoted
+                    && demote_to == State::Runnable
+                    && let Some(p) = table[current_id].as_mut()
+                {
                     p.state = State::Running;
                 }
                 (current, None)
@@ -1200,12 +1206,39 @@ fn resched() -> bool {
 
 /// Put the current process off the ready set (a blocking wait).  Switches to
 /// the next Runnable process and does not return until the process is `wake`
-///-en and selected again.  Called from a blocking syscall; if nothing else is
-/// Runnable there is nowhere to go and the process is left Running (a
-/// deadlock the test images avoid by keeping a busy process runnable).
+///-en and selected again.  If nothing else is Runnable the process stays
+/// Blocked and the kernel regains control (`run_all` returns), so the kernel
+/// can do work (a `try_send` that wakes the blocked process) and re-enter
+/// the scheduler.
 #[cfg(target_os = "none")]
 pub(crate) fn block_current() -> bool {
-    switch_out(State::Blocked)
+    if switch_out(State::Blocked) {
+        return true;
+    }
+    // `switch_out` returned false: no next process.  The current process is
+    // now Blocked (not resurrected to Running).  All processes are blocked:
+    // save this process's context (it resumes when woken) and switch back to
+    // the kernel (the starter), so `run_all` returns.
+    let current = unsafe { tpidr_current() };
+    if current.is_null() {
+        return false;
+    }
+    unsafe { tpidr_set(core::ptr::null_mut()) };
+    port::irq::exit_interrupt();
+    let starter = unsafe { core::ptr::read(starter_ctx_addr()) };
+    // The from slot is the process's own context field in the table: when
+    // the process is later woken and selected, `switch_out` loads it and
+    // execution resumes here (the suspended handler's continuation).
+    // SAFETY: `current` is a live table slot; its context field is the
+    // saved switch point.  The starter is the kernel context `run_all`
+    // saved before its first switch.
+    unsafe { swtch(&mut (*current).context, starter, SPSR_EL1H | DAIF_MASKED) };
+    // Resumed inside the suspended handler: the process was woken and
+    // selected.  Re-enter interrupt context (the `exit_interrupt` above
+    // was for the kernel side) and restore TPIDR.
+    port::irq::enter_interrupt();
+    unsafe { tpidr_set(current) };
+    true
 }
 
 /// Put `id` back on the ready set: a Blocked process becomes Runnable and is

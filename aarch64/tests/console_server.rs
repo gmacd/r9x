@@ -143,12 +143,13 @@ pub extern "C" fn main9(dtb_va: usize) {
     println!("ns status: {:?}, server status: {status:?}", process::status(ns));
     println!("run_order: {:?}", process::run_order());
     // The server's 'A' went out the PL011 to the terminal (this is now the
-    // kernel console); its exit 0 is the in-image check that it ran, mapped
-    // the device, wrote the byte, created its pair, bound it, and completed.
-    // (The bind's `OK` is the nameserver's reply the server reads; a non-`OK`
-    // still exits 0 — the client-side proof the bind landed is the
-    // `namespace` image's job.)
-    check!(status == Some(0), "server exited 0, got {status:?}");
+    // kernel console).  The server is now blocked on its post-bind receive
+    // (waiting for a client), so it is still alive: the in-image check is
+    // that it ran, mapped the device, wrote the byte, created its pair,
+    // bound it, and is now waiting.  The client-side proof the bind landed
+    // and the server's clean exit after a round-trip is the `namespace`
+    // image's job.
+    check!(status.is_none(), "server alive (blocked on post-bind receive), got {status:?}");
     println!("console-server passed");
     qemu::exit(qemu::PASS);
 }

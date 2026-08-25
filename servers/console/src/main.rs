@@ -30,6 +30,7 @@ const MMIO_VA: u64 = 0x8000_0000;
 const SYS_EXIT: u64 = 0;
 const SYCSEND: u64 = 16;
 const SYCRECEIVE: u64 = 17;
+const SYCREPLY: u64 = 18;
 const SYS_MAP_MMIO: u64 = 20;
 const SYCCREATECHAN: u64 = 21;
 
@@ -170,7 +171,7 @@ pub extern "C" fn start() -> ! {
         unsafe { sys(SYCSEND, ns_in, req.as_ptr() as u64, req.len() as u64, OP_BIND as u64, 0) };
 
     // Receive the result on the nameserver's outbound channel.  It is
-    // `R_OK` or `R_EFULL`; on a non-`OK` the server still exits 0 — binding
+    // `R_OK` or `R_EFULL`; on a non-`OK` the server still proceeds — binding
     // is the namespace's concern and the image asserts the bind landed, so
     // a failure here is reported by the image, not the server.
     let mut reply = [0u8; 8];
@@ -178,9 +179,22 @@ pub extern "C" fn start() -> ! {
         unsafe { sys(SYCRECEIVE, ns_out, reply.as_mut_ptr() as u64, reply.len() as u64, 0, 0) };
     let _ = (op == R_OK as u64) || (op == R_EFULL as u64);
 
-    // Exit, keeping the stage-5 "write and exit" shape: the round-trip (a
-    // client resolving `/dev/console` and sending a byte) is the image's
-    // job, not the server's.
+    // One-shot client service: receive a byte on this server's own inbound
+    // channel, echo it back on the outbound channel, then exit.  A
+    // persistent loop is stage 7's concern (9P servers serve many clients);
+    // this arc needs only one round-trip to prove the namespace works end to
+    // end.
+    let mut req_buf = [0u8; 16];
+    let (_, bytes, tag) =
+        unsafe { sys(SYCRECEIVE, in_h, req_buf.as_mut_ptr() as u64, req_buf.len() as u64, 0, 0) };
+    let n = bytes as usize;
+    // Reply with the received byte echoed: opcode `R_OK`, payload is the
+    // first `n` bytes of the request (the client sends one byte).
+    let reply_len = n.min(16);
+    let _ = unsafe {
+        sys(SYCREPLY, out_h, req_buf.as_ptr() as u64, reply_len as u64, R_OK as u64, tag)
+    };
+
     // SAFETY: `exit` issues the exit syscall and never returns.
     unsafe { exit(0) };
 }

@@ -103,5 +103,10 @@ name = "console_server"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "namespace"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true

@@ -63,6 +63,8 @@ pub enum IpcErr {
     Full,
     /// A reply whose tag no outstanding request carries.
     BadTag,
+    /// The queue is empty: a non-blocking [`try_receive`] found no message.
+    Empty,
 }
 
 /// A process id, as far as the scheduler is concerned: an opaque index.
@@ -313,6 +315,39 @@ pub fn try_send<S: IpcScheduler>(
         sched.wake(receiver);
     }
     Ok(())
+}
+
+/// Receive a message from `ch` through `sched` without blocking: the
+/// interrupt-context / init-context variant of [`receive`].  Dequeues a
+/// message if one is queued (waking a sender blocked on a full queue),
+/// returns [`IpcErr::Empty`] if the queue is empty, and
+/// [`IpcErr::Closed`] if the channel is closed.  Does not require a current
+/// process: the caller is the kernel, not a process.
+pub fn try_receive<S: IpcScheduler>(
+    sched: &S,
+    ch: &Channel,
+) -> core::result::Result<Message, IpcErr> {
+    let node = crate::mcslock::LockNode::new();
+    let (msg, sendw) = {
+        let mut inner = ch.inner.lock(&node);
+        if inner.closed {
+            return Err(IpcErr::Closed);
+        }
+        match inner.queue.pop() {
+            Some(m) => (Some(m), inner.send_waiter.take()),
+            None => (None, None),
+        }
+    };
+    match msg {
+        Some(m) => {
+            // A slot freed: wake a sender blocked on a full queue, if any.
+            if let Some(s) = sendw {
+                sched.wake(s);
+            }
+            Ok(m)
+        }
+        None => Err(IpcErr::Empty),
+    }
 }
 
 /// Receive a message from `ch` through `sched`.

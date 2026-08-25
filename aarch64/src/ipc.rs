@@ -237,19 +237,22 @@ const ERR_CLOSED: u64 = 2;
 #[cfg(target_os = "none")]
 const ERR_FULL: u64 = 3;
 #[cfg(target_os = "none")]
-const ERR_BAD_TAG: u64 = 4;
+const ERR_EMPTY: u64 = 4;
 #[cfg(target_os = "none")]
-const ERR_BAD_INTID: u64 = 5;
+const ERR_BAD_TAG: u64 = 5;
 #[cfg(target_os = "none")]
-const ERR_ALREADY_CLAIMED: u64 = 6;
+const ERR_BAD_INTID: u64 = 6;
 #[cfg(target_os = "none")]
-const ERR_NO_SLOT: u64 = 7;
+const ERR_ALREADY_CLAIMED: u64 = 7;
+#[cfg(target_os = "none")]
+const ERR_NO_SLOT: u64 = 8;
 
 #[cfg(target_os = "none")]
 fn err_code(e: IpcErr) -> u64 {
     match e {
         IpcErr::Closed => ERR_CLOSED,
         IpcErr::Full => ERR_FULL,
+        IpcErr::Empty => ERR_EMPTY,
         IpcErr::BadTag => ERR_BAD_TAG,
     }
 }
@@ -387,7 +390,11 @@ pub(crate) fn sys_receive(handle: u64, buf: *mut u8, cap: u64) -> (u64, u64, u64
     };
     match ipc::receive(&KernSched, ch) {
         Ok(msg) => {
-            let n = unsafe { copy_to_user(buf, &msg.buf, cap as usize) };
+            // Copy only the message's actual payload (`msg.len` bytes), not
+            // the full `MSG_MAX` buffer: the receiver's `bytes` return is the
+            // payload length, and a protocol that reads `buf[..bytes]` would
+            // see trailing zeros if the full buffer were copied.
+            let n = unsafe { copy_to_user(buf, &msg.buf, (msg.len as usize).min(cap as usize)) };
             (msg.opcode as u64, n as u64, msg.tag as u64)
         }
         Err(e) => (err_code(e), 0, 0),
