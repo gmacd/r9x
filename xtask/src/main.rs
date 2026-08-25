@@ -82,11 +82,11 @@ impl Arch {
         format!("r9x-{}", self.to_string().to_lowercase())
     }
 
-    /// The user-space target spec for the server build: `userland/specs/
-    /// r9x-<arch>.json`, distinct from the kernel's `lib/<target>.json` (its
-    /// `os` is `"r9"`, so the compiler swaps in `r9x_std` for `std`).
+    /// The user-space target spec for the server build: `lib/r9x-<arch>.json`,
+    /// alongside the kernel's `lib/<target>.json` (its `os` is `"r9"`, so the
+    /// compiler swaps in `r9x_std` for `std`).
     fn user_spec(&self) -> String {
-        format!("userland/specs/{}.json", self.user_target())
+        format!("lib/{}.json", self.user_target())
     }
 
     /// The `default-target` value in the arch's `Cargo.toml`: what a server's
@@ -894,7 +894,7 @@ impl TestStep {
         // <arch>-unknown-linux-gnu target instead, which is why
         // rust-toolchain.toml names one for aarch64.  riscv64 and x86_64
         // have no tests today; the selection still runs whatever is added.
-        // `port` and the `userland/` target crates are host-buildable pure
+        // `port` and the r9x target crates (abi, core, std) are host-buildable pure
         // Rust (no bare-metal entry symbol), so their tests run on any host.
         // The arch packages are the bare-metal ones that only run natively.
         // (`r9x-abi` has no tests yet; `r9x-std` is added by its task, once
@@ -1938,18 +1938,18 @@ fn exclude_other_arches(arch: Arch, cmd: &mut Command) {
     }
 }
 
-/// The workspace members under `userland/servers/` whose `default-target`
-/// matches `arch`.  Returns their package names (the directory basename, which is
-/// the package name by convention).  The discovery is from the Cargo files
-/// themselves: a server belongs to an arch if its `default-target` says so,
-/// so adding a server for a new arch requires no xtask change.
+/// The workspace members under `cmd/` whose `default-target` matches `arch`.
+/// Returns their package names (the directory basename, which is the package
+/// name by convention).  The discovery is from the Cargo files themselves: a
+/// server belongs to an arch if its `default-target` says so, so adding a
+/// server for a new arch requires no xtask change.
 fn servers_for(arch: Arch) -> Vec<String> {
     let want = arch.default_target();
     workspace_members()
         .into_iter()
-        .filter(|m| m.starts_with("userland/servers/"))
+        .filter(|m| m.starts_with("cmd/"))
         .filter_map(|m| {
-            let name = m.trim_start_matches("userland/servers/").to_string();
+            let name = m.trim_start_matches("cmd/").to_string();
             let ct = workspace().join(&m).join("Cargo.toml");
             let c = fs::read_to_string(&ct).unwrap_or_else(|e| panic!("read {ct:?}: {e}"));
             let table: toml::Table = c.parse().unwrap_or_else(|e| panic!("parse {ct:?}: {e}"));
@@ -1970,12 +1970,12 @@ fn exclude_foreign_servers(arch: Arch, cmd: &mut Command) {
     }
 }
 
-/// Every workspace member under `userland/servers/`, regardless of arch.
+/// Every workspace member under `cmd/`, regardless of arch.
 fn all_servers() -> Vec<String> {
     workspace_members()
         .into_iter()
-        .filter(|m| m.starts_with("userland/servers/"))
-        .map(|m| m.trim_start_matches("userland/servers/").to_string())
+        .filter(|m| m.starts_with("cmd/"))
+        .map(|m| m.trim_start_matches("cmd/").to_string())
         .collect()
 }
 
