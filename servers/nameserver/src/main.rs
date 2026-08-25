@@ -151,12 +151,20 @@ pub extern "C" fn start() -> ! {
             _ => (R_ENOENT, None),
         };
         // A RESOLVE that found a name replies with the pair; every other reply
-        // is empty.
+        // is empty.  `ptr::copy_nonoverlapping` rather than `copy_from_slice`:
+        // the latter is a non-inlined call in this `no_std` build and its stack
+        // frame exceeds the mapped user stack.
         let mut out = [0u8; 8];
         let out_slice: &[u8] = match found {
             Some(p) => {
-                out[..4].copy_from_slice(&p.in_h.to_le_bytes());
-                out[4..8].copy_from_slice(&p.out_h.to_le_bytes());
+                // SAFETY: the two 4-byte halves of `out` are disjoint and the
+                // source arrays are 4 bytes each.
+                unsafe {
+                    let ib = p.in_h.to_le_bytes();
+                    core::ptr::copy_nonoverlapping(ib.as_ptr(), out.as_mut_ptr(), 4);
+                    let ob = p.out_h.to_le_bytes();
+                    core::ptr::copy_nonoverlapping(ob.as_ptr(), out.as_mut_ptr().add(4), 4);
+                };
                 &out[..8]
             }
             None => &[],

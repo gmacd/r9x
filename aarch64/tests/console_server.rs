@@ -1,10 +1,13 @@
-//! Integration test: user-space device MMIO ownership via SYSMAPMMIO.
+//! Integration test: user-space device MMIO ownership via SYSMAPMMIO, with
+//! the console server publishing a name.
 //!
 //! The kernel enables the PL011 UART via its own mapping (the early path),
 //! then spawns the console server — a Rust-built ELF (built by xtask's
 //! ServerStep, embedded here, loaded by `spawn_elf`) that calls SYSMAPMMIO to
 //! map the PL011's physical register page into its own TTBR0 (Device memory
-//! attributes), writes 'A' to the UART's data register, and exits 0.
+//! attributes), writes 'A' to the UART's data register, creates its own
+//! channel pair, publishes it under `/dev/console` in the nameserver, and
+//! exits 0.
 //!
 //! The kernel brings the device up (enable + a control-readback check) but
 //! does not map it into the server's address space: the server knows its
@@ -13,13 +16,21 @@
 //! terminal; that device is now the kernel console too, so the byte is visible
 //! on the serial output and the server's exit 0 is the in-image check that it
 //! ran, mapped the device, wrote the byte, and completed.
+//!
+//! To bind, the server needs the nameserver: the image creates the
+//! nameserver's channel pair, spawns the nameserver ELF handing it its own
+//! pair (the one asymmetry — it is the first server, so nothing exists yet
+//! that a client could ask to find it), and spawns the console server handing
+//! it the nameserver's pair, so it can `BIND` to it.  The client-side
+//! resolution (a client `RESOLVE`ing `/dev/console` and round-tripping a byte)
+//! is the `namespace` image's job, not this one.
 
 #![no_std]
 #![no_main]
 
 use aarch64::io::{read_reg, write_reg};
 use aarch64::uartpl011::UART0_CR;
-use aarch64::{boot, deviceutil, mailbox, process, qemu, vm};
+use aarch64::{boot, deviceutil, ipc, mailbox, process, qemu, vm};
 use port::fdt::DeviceTree;
 use port::println;
 
@@ -32,6 +43,13 @@ mod common;
 /// loader reads it through `Image::Elf` — the unified entry point the raw
 /// images reach through `Image::Raw`.
 static CONSOLE_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/console.elf"));
+
+/// The built nameserver's ELF, embedded the same way: the server the console
+/// server `BIND`s to.  It owns the bind table and serves `BIND` / `RESOLVE` /
+/// `UNBIND` over the message syscalls; the image hands it its own channel
+/// pair (the first-server asymmetry) and the console server the same pair, so
+/// the server can publish `/dev/console` in it.
+static NAMESERVER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nameserver.elf"));
 
 /// The PL011's physical base on the BCM2711 (QEMU `raspi4b`): the value the
 /// console server hardcodes (`servers/console`) and the device tree is
@@ -102,16 +120,34 @@ pub extern "C" fn main9(dtb_va: usize) {
     enable_pl011(&dt);
     println!("pl011 enabled (kernel side)");
 
-    let server = process::spawn(&process::Image::Elf(CONSOLE_ELF));
-    println!("server spawned, running");
+    // The nameserver's channel pair: created kernel-side (the image is
+    // init-context) and handed to the nameserver (its own pair — the
+    // first-server asymmetry) and to the console server (the pair it `BIND`s
+    // to).  The image keeps the pair to pass to both, so the servers never
+    // see each other's handles by constant.
+    let ns_in = ipc::create();
+    let ns_out = ipc::create();
+    let ns_handles = process::Handles { inbound: ns_in as u32, outbound: ns_out as u32 };
+    let ns =
+        process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
+    // The console server is handed the nameserver's pair, not its own: it
+    // `SYCCREATECHAN`s its own pair and `BIND`s it to the nameserver over
+    // `ns_in` / `ns_out`.
+    let server =
+        process::spawn(&process::Image::Elf { bytes: CONSOLE_ELF, handles: Some(ns_handles) });
+    println!("nameserver + console server spawned, running");
 
     process::run_all();
 
     let status = process::status(server);
-    println!("server status: {status:?}");
+    println!("ns status: {:?}, server status: {status:?}", process::status(ns));
+    println!("run_order: {:?}", process::run_order());
     // The server's 'A' went out the PL011 to the terminal (this is now the
     // kernel console); its exit 0 is the in-image check that it ran, mapped
-    // the device, wrote the byte, and completed.
+    // the device, wrote the byte, created its pair, bound it, and completed.
+    // (The bind's `OK` is the nameserver's reply the server reads; a non-`OK`
+    // still exits 0 — the client-side proof the bind landed is the
+    // `namespace` image's job.)
     check!(status == Some(0), "server exited 0, got {status:?}");
     println!("console-server passed");
     qemu::exit(qemu::PASS);

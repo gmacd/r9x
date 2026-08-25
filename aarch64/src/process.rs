@@ -517,7 +517,27 @@ pub enum Image<'a> {
     Raw { text: &'a [u8], text_va: usize, stack_va: usize },
     /// A self-describing ELF: layout (segments, entry, sizes) comes from the
     /// header; the stack is derived above the highest segment (the servers).
-    Elf(&'a [u8]),
+    /// `handles`, when present, is the spawner-passed channel pair the loader
+    /// writes to `HANDLES_VA` before the process starts (see `Handles`).
+    Elf { bytes: &'a [u8], handles: Option<Handles> },
+}
+
+/// The channel pair the spawner hands a process: written as
+/// `[inbound:4 LE][outbound:4 LE]` to [`port::user::HANDLES_VA`] before the
+/// process's first instruction.  It is the one way a value crosses from the
+/// spawner (a kernel image) into a process's own address space — a server
+/// cannot be told its handles by any constant it knows (unlike its own MMIO
+/// base), so the spawner must pass them.  For the first server (the
+/// nameserver) this is its own pair — it is the first server, so nothing
+/// exists yet that a client could ask to find it; for a later server (the
+/// console server) this is the nameserver's pair, so it can `BIND` to it.
+/// Defined unconditionally (plain data) so the host build sees it too.
+#[derive(Clone, Copy)]
+pub struct Handles {
+    /// The inbound channel: clients send here.
+    pub inbound: u32,
+    /// The outbound channel: clients receive replies here.
+    pub outbound: u32,
 }
 
 /// Start a process from an image, mapping its pages into a fresh per-process
@@ -538,7 +558,7 @@ pub enum Image<'a> {
 pub fn spawn(image: &Image) -> ProcessId {
     match image {
         Image::Raw { text, text_va, stack_va } => spawn_raw(text, *text_va, *stack_va),
-        Image::Elf(bytes) => spawn_elf(bytes),
+        Image::Elf { bytes, handles } => spawn_elf(bytes, *handles),
     }
 }
 
@@ -581,9 +601,10 @@ const STACK_PAGES: usize = 16;
 /// each segment's placement (arch-specific — the `port::elf` reader checks
 /// structure only), map the segments into a fresh `Aspace` (executable text vs.
 /// data), copy the file bytes and zero the bss, map the stack above the
-/// highest segment, and start the process at `e_entry`.
+/// highest segment, write the spawner-passed channel pair to `HANDLES_VA`
+/// (when present), and start the process at `e_entry`.
 #[cfg(target_os = "none")]
-fn spawn_elf(bytes: &[u8]) -> ProcessId {
+fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
     let image = port::elf::parse(bytes).unwrap_or_else(|err| panic!("elf: {err:?}"));
     let segs = image.segments();
 
@@ -688,6 +709,21 @@ fn spawn_elf(bytes: &[u8]) -> ProcessId {
         let _kptr = aspace
             .map_user_page(Entry::rw_user_data(), stack_base + page * mem::PAGE_SIZE_4K)
             .unwrap_or_else(|err| panic!("elf: stack page: {err:?}"));
+    }
+    // The spawner-passed channel pair: if present, map `HANDLES_VA` and write
+    // `[inbound:4 LE][outbound:4 LE]`.  The page sits in the user half, clear
+    // of the image (at `ELF_BASE`) and its stack by a wide margin, so it is
+    // never a segment or a stack page the placement checks above would place.
+    if let Some(h) = handles {
+        let mut pair = [0u8; 8];
+        pair[0..4].copy_from_slice(&h.inbound.to_le_bytes());
+        pair[4..8].copy_from_slice(&h.outbound.to_le_bytes());
+        let kptr = aspace
+            .map_user_page(Entry::rw_user_data(), port::user::HANDLES_VA)
+            .unwrap_or_else(|err| panic!("elf: handles page: {err:?}"));
+        // SAFETY: `kptr` is a freshly mapped page, valid and kernel-writable,
+        // and 8 bytes fit.
+        unsafe { core::ptr::copy_nonoverlapping(pair.as_ptr(), kptr, 8) };
     }
     let user_sp = stack_base + STACK_PAGES * mem::PAGE_SIZE_4K - 16;
     install(aspace, image.entry as usize, user_sp)
