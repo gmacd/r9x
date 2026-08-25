@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/rust-cache
       - name: Run fmt
         run: cargo xtask fmt --check
@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/rust-cache
       - name: Run tests
         run: cargo xtask test
@@ -54,7 +54,7 @@ jobs:
       matrix:
         arch: [aarch64, riscv64, x86-64]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/rust-cache
       - name: Prepare apt package cache
         # The .debs from a fast run are reused by later ones, so a slow
@@ -62,7 +62,7 @@ jobs:
         # chowned recursively because apt's partial directory is 700 and
         # the cache save, which runs as the runner user, cannot read it.
         run: sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         # The key is unique per run so the save is never skipped as an
         # exact hit: the .debs apt wants advance with the runner image,
         # and a frozen cache would decay into full re-downloads while
