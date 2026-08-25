@@ -1,0 +1,20 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "init"
+version = "0.1.0"
+edition = "2024"
+default-target = "aarch64-unknown-none"
+
+# The init process: the first "real" user process.  In this arc it does
+# nothing but exist and block — the placeholder for the process manager
+# that stage 7 fills in (spawn servers, handle crashes, restart them).
+#
+# Aarch64-only for the arc, as the other servers are.  Built by `cargo
+# xtask` (ServerStep), not by a bare `cargo build`.
+#
+# No std, no alloc, no dependencies: the server is `core` plus a tiny
+# syscall shim.
+
+[lints]
+workspace = true

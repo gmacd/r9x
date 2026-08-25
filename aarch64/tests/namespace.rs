@@ -10,7 +10,7 @@
 //! inbound channel, and checks the echo on the resolved outbound channel.
 //!
 //! The client is the kernel itself (`port::ipc::try_send` / `try_receive`
-//! from init context): the 4-slot channel table is exactly full with the
+//! from init context): the channel table is full with the
 //! nameserver's pair + the console server's pair, so a separate client
 //! process that `SYCCREATECHAN`s its own pair would overflow it.  The
 //! user-space syscall path is already proven by the servers themselves.

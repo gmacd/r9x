@@ -10,7 +10,7 @@ use aarch64::kmem::{
     total_kernel_physrange,
 };
 use aarch64::vm::RootPageTableType;
-use aarch64::{boot, mailbox, pagealloc, process, vm};
+use aarch64::{boot, ipc, mailbox, pagealloc, process, vm};
 use port::mem::{PhysRange, VirtRange};
 use port::println;
 
@@ -76,15 +76,10 @@ fn print_stacks() {
     println!("Interrupt stack:{range} ({range_size:#x})");
 }
 
-/// The first process's whole program: `svc #0` (sysexit).  AArch64
-/// `svc` is 0xd4000001 | (number << 8), little-endian (Arm ARM DDI
-/// 0487).
-const FIRST_PROCESS_TEXT: [u8; 4] = [0x01, 0x00, 0x00, 0xd4];
-
-/// Where the first process's text and stack are mapped: the TTBR0
-/// (user) half, not the TTBR1 (kernel) half.
-const USER_TEXT_VA: usize = 0x1000;
-const USER_STACK_VA: usize = 0x10000;
+// The user-space server ELFs, staged into OUT_DIR by build.rs.
+static CONSOLE_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/console.elf"));
+static NAMESERVER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nameserver.elf"));
+static INIT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.elf"));
 
 /// dtb_va is the virtual address of the DTB structure.  The physical address is
 /// assumed to be dtb_va-KZERO.
@@ -134,20 +129,33 @@ pub extern "C" fn main9(dtb_va: usize) {
     // vmdebug::print_recursive_tables(RootPageTableType::Kernel);
     // vmdebug::print_recursive_tables(RootPageTableType::User);
 
-    // The first process: its whole program is the sysexit, and it
-    // enters with IRQs unmasked, so the timers keep firing while it
-    // runs.  The kernel resumes here when it exits.
-    println!("starting first process");
-    let id = process::spawn(&process::Image::Raw {
-        text: &FIRST_PROCESS_TEXT,
-        text_va: USER_TEXT_VA,
-        stack_va: USER_STACK_VA,
-    });
-    process::run_all();
-    let status = process::status(id);
-    println!("first process returned, status {status:?}");
+    // The real bringup: the kernel spawns the nameserver (handed its own
+    // channel pair — the first-server asymmetry), the console server (which
+    // creates its own pair and BINDs /dev/console), and init (which blocks
+    // forever; stage 7 fills it in as the process manager).
+    //
+    // The nameserver must be up before the console server's BIND is
+    // processed. This holds by construction: the nameserver is spawned first
+    // and blocks on its first receive; the console server's BIND send wakes
+    // it (the IPC fast path); the nameserver processes the BIND before the
+    // console server blocks on its post-bind receive.
+    println!("starting system");
 
-    println!("looping now");
+    let ns_in = ipc::create();
+    let ns_out = ipc::create();
+    let ns_handles = process::Handles { inbound: ns_in as u32, outbound: ns_out as u32 };
+
+    process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
+    process::spawn(&process::Image::Elf { bytes: CONSOLE_ELF, handles: Some(ns_handles) });
+    process::spawn(&process::Image::Elf { bytes: INIT_ELF, handles: None });
+
+    // The system is live. `run_all` runs the processes to a fixpoint: the
+    // nameserver is blocked on its receive loop, the console server on its
+    // post-bind receive, and init on its receive.  When all are blocked, the
+    // kernel regains control and idles.  A future event (a client message,
+    // stage 7) would wake a process; re-entering the scheduler from here is
+    // the idle mechanism that stage 7 provides (WFI or an idle process).
+    process::run_all();
 
     #[allow(clippy::empty_loop)]
     loop {}

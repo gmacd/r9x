@@ -1,7 +1,7 @@
 use crate::config::Configuration;
 use config::{apply_to_build_step, apply_to_clippy_step, apply_to_qemu_step};
 use std::{
-    env, fmt,
+    env, fmt, fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{self, Command},
@@ -74,6 +74,17 @@ impl Arch {
 
     fn target(&self) -> String {
         env_or("TARGET", format!("{}-unknown-none-elf", self.to_string().to_lowercase()).as_str())
+    }
+
+    /// The `default-target` value in the arch's `Cargo.toml`: what a server's
+    /// `Cargo.toml` must say in its `default-target` to be recognised as
+    /// belonging to this arch.
+    fn default_target(&self) -> &'static str {
+        match self {
+            Arch::Aarch64 => "aarch64-unknown-none",
+            Arch::Riscv64 => "riscv64gc-unknown-none-elf",
+            Arch::X86_64 => "x86_64-unknown-none",
+        }
     }
 
     /// The process exit status a passing test image leaves QEMU with.
@@ -421,13 +432,7 @@ impl BuildStep {
         cmd.current_dir(workspace());
         cmd.arg("--workspace");
         cmd.arg("--exclude").arg("xtask");
-        // The servers are separate user-space executables, not part of the
-        // kernel image; the ServerStep builds them (aarch64 only, where the
-        // loader's per-process Aspace exists).  Excluding them here also keeps
-        // the aarch64-only servers out of the other arches' image builds
-        // (their syscall shims use aarch64 register names).
-        cmd.arg("--exclude").arg("console");
-        cmd.arg("--exclude").arg("nameserver");
+        exclude_foreign_servers(self.arch, &mut cmd);
         exclude_other_arches(self.arch, &mut cmd);
         if self.profile == Profile::Release {
             cmd.arg("--release");
@@ -962,14 +967,8 @@ impl ClippyStep {
         // Libs and bins, linted the way the kernel is built.
         let mut cmd = self.command();
         cmd.arg("--workspace");
+        exclude_foreign_servers(self.arch, &mut cmd);
         exclude_other_arches(self.arch, &mut cmd);
-        // The servers are aarch64-only; on the other arches they would not
-        // build (their syscall shims use aarch64 register names), so they are
-        // excluded there and linted only by the aarch64 clippy.
-        if self.arch != Arch::Aarch64 {
-            cmd.arg("--exclude").arg("console");
-            cmd.arg("--exclude").arg("nameserver");
-        }
         self.lint(cmd)?;
 
         // Tests and benches are separate targets and are not covered above.
@@ -1051,33 +1050,20 @@ struct ServerStep {
     verbose: bool,
 }
 
-/// The aarch64 user-space servers, in build order: the console server (stage
-/// 5) and the nameserver (stage 6).  Every consumer of a server ELF (an
-/// embedding image's `build.rs`, the gate) stages and tracks these paths; each
-/// is built for every aarch64 build (a no-op for an image that does not embed
-/// it).
-const SERVERS: [&str; 2] = ["console", "nameserver"];
-
 impl ServerStep {
     fn new(arch: Arch, profile: Profile, verbose: bool) -> Self {
         Self { arch, profile, verbose }
     }
 
-    /// The staged ELF for `server`, or none if this arch has no servers.
-    fn elf(&self, server: &str) -> Option<PathBuf> {
-        (self.arch == Arch::Aarch64).then(|| {
-            target_dir()
-                .join(self.arch.target())
-                .join(self.profile.dir())
-                .join(format!("{server}.elf"))
-        })
+    /// The staged ELF for `server`.
+    fn elf(&self, server: &str) -> PathBuf {
+        target_dir().join(self.arch.target()).join(self.profile.dir()).join(format!("{server}.elf"))
     }
 
     fn run(self) -> Result<()> {
-        for server in SERVERS {
-            let Some(elf) = self.elf(server) else {
-                return Ok(());
-            };
+        let servers = servers_for(self.arch);
+        for server in &servers {
+            let elf = self.elf(server);
             let mut cmd = Command::new(cargo());
             cmd.current_dir(workspace());
             cmd.arg("build");
@@ -1931,6 +1917,64 @@ fn exclude_other_arches(arch: Arch, cmd: &mut Command) {
     for other in Arch::ALL.iter().filter(|&&other| other != arch) {
         cmd.arg("--exclude").arg(other.package());
     }
+}
+
+/// The workspace members under `servers/` whose `default-target` matches
+/// `arch`.  Returns their package names (the directory basename, which is
+/// the package name by convention).  The discovery is from the Cargo files
+/// themselves: a server belongs to an arch if its `default-target` says so,
+/// so adding a server for a new arch requires no xtask change.
+fn servers_for(arch: Arch) -> Vec<String> {
+    let want = arch.default_target();
+    workspace_members()
+        .into_iter()
+        .filter(|m| m.starts_with("servers/"))
+        .filter_map(|m| {
+            let name = m.trim_start_matches("servers/").to_string();
+            let ct = workspace().join(&m).join("Cargo.toml");
+            let c = fs::read_to_string(&ct).unwrap_or_else(|e| panic!("read {ct:?}: {e}"));
+            let table: toml::Table = c.parse().unwrap_or_else(|e| panic!("parse {ct:?}: {e}"));
+            let dt =
+                table.get("package").and_then(|p| p.get("default-target")).and_then(|d| d.as_str());
+            (dt == Some(want)).then_some(name)
+        })
+        .collect()
+}
+
+/// Exclude servers that do not belong to `arch` (their `default-target` is a
+/// different arch, so they would not build for this one).
+fn exclude_foreign_servers(arch: Arch, cmd: &mut Command) {
+    let ours = servers_for(arch);
+    let all = all_servers();
+    for s in all.iter().filter(|s| !ours.contains(*s)) {
+        cmd.arg("--exclude").arg(s);
+    }
+}
+
+/// Every workspace member under `servers/`, regardless of arch.
+fn all_servers() -> Vec<String> {
+    workspace_members()
+        .into_iter()
+        .filter(|m| m.starts_with("servers/"))
+        .map(|m| m.trim_start_matches("servers/").to_string())
+        .collect()
+}
+
+/// The `workspace.members` array from the root `Cargo.toml`.
+fn workspace_members() -> Vec<String> {
+    let root = workspace().join("Cargo.toml");
+    let content =
+        fs::read_to_string(&root).unwrap_or_else(|e| panic!("read {}: {e}", root.display()));
+    let table: toml::Table =
+        content.parse().unwrap_or_else(|e| panic!("parse {}: {e}", root.display()));
+    table
+        .get("workspace")
+        .and_then(|w| w.get("members"))
+        .and_then(|m| m.as_array())
+        .expect("workspace.members in root Cargo.toml")
+        .iter()
+        .filter_map(|m| m.as_str().map(String::from))
+        .collect()
 }
 
 /// Annotates the error result with the calling binary's name.

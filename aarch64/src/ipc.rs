@@ -36,15 +36,14 @@ use port::ipc::Channel;
 /// The number of channels: a fixed table (no allocation).  A channel handle
 /// is an index into it.
 #[cfg(any(target_os = "none", test))]
-const NCHANNELS: usize = 4;
+const NCHANNELS: usize = 6;
 
 /// The channel table.  `Channel` is `!Copy` (it holds a lock), so the array
 /// is spelled out rather than repeated.  A channel is not reclaimed this arc:
 /// it lives for the program, so a handle is valid while in use and the lookup
 /// is a plain index into a `static`.
 #[cfg(any(target_os = "none", test))]
-static CHANNELS: [Channel; NCHANNELS] =
-    [Channel::new(0), Channel::new(0), Channel::new(0), Channel::new(0)];
+static CHANNELS: [Channel; NCHANNELS] = [const { Channel::new(0) }; NCHANNELS];
 
 /// How many channels have been created: the next handle is the old count.
 #[cfg(any(target_os = "none", test))]
@@ -149,6 +148,16 @@ pub(crate) fn try_create() -> Option<ChannelHandle> {
 #[cfg(any(target_os = "none", test))]
 pub fn create() -> ChannelHandle {
     try_create().unwrap_or_else(|| panic!("ipc: no free channel slot ({NCHANNELS})"))
+}
+
+/// Host stub: the binary's test target compiles the library as a dependency
+/// (not in test mode, on a host-like target) where the channel table does not
+/// exist.  Never called: `main9` is `no_main` and never runs on the host.
+#[cfg(not(any(target_os = "none", test)))]
+pub fn create() -> ChannelHandle {
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// The channel for `handle`, if it has been created.
