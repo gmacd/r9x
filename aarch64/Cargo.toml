@@ -110,5 +110,10 @@ name = "namespace"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "heap"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true

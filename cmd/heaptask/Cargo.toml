@@ -1,0 +1,24 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "heaptask"
+version = "0.1.0"
+edition = "2024"
+default-target = "aarch64-unknown-none"
+
+# The heaptask: a minimal user process that drives the `r9x_std` heap.  The
+# `heap` integration image embeds it and spawns it (twice, to show the heap is
+# per-process) to prove that `alloc` is real: a server can allocate past its
+# static footprint and the kernel backs it.
+#
+# Aarch64-only for the arc, as the other servers are.  Built by `cargo xtask`
+# (ServerStep), not by a bare `cargo build`.
+#
+# Links `r9x_std`, the curated r9 facade (the syscall core, the runtime entry
+# and the kernel-backed heap).
+
+[dependencies]
+r9x-std = { path = "../../std" }
+
+[lints]
+workspace = true

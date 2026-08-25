@@ -328,6 +328,16 @@ fn trap(frame: &mut TrapFrame) {
                     frame.x0 = result;
                     return;
                 }
+                process::SYS_ALLOC => {
+                    let result = ipc::sys_alloc(frame.x0);
+                    frame.x0 = result;
+                    return;
+                }
+                process::SYS_FREE => {
+                    let result = ipc::sys_free(frame.x0);
+                    frame.x0 = result;
+                    return;
+                }
                 // Exit and an unimplemented number both end the
                 // process, with the svc number as status.
                 _ => process::exit_current(syscall),
@@ -369,6 +379,8 @@ fn svc_returns(syscall: u64) -> bool {
             | process::SYSIRQCLAIM
             | process::SYSMAPMMIO
             | process::SYCCREATECHAN
+            | process::SYS_ALLOC
+            | process::SYS_FREE
     )
 }
 
@@ -454,8 +466,9 @@ mod tests {
 
     #[test]
     fn svc_dispatch_classification() {
-        // Yield, the message syscalls, IRQ claim, and MMIO map all
-        // return to the process; exit and every unimplemented number end it.
+        // Yield, the message syscalls, IRQ claim, the MMIO map, and the heap
+        // grow/free all return to the process; exit and every unimplemented
+        // number end it.
         assert!(svc_returns(process::SYSYIELD), "yield must return");
         for n in [
             process::SYCSEND,
@@ -464,6 +477,8 @@ mod tests {
             process::SYSIRQCLAIM,
             process::SYSMAPMMIO,
             process::SYCCREATECHAN,
+            process::SYS_ALLOC,
+            process::SYS_FREE,
         ] {
             assert!(svc_returns(n), "syscall {n} must return");
         }

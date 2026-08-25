@@ -55,7 +55,8 @@ use port::{iprintln, mem};
 // (the number in x8, arguments in x0-x4) is spelled where the trap frame is
 // laid out.
 pub use r9x_abi::{
-    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
+    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_FREE, SYSEXIT, SYSIRQCLAIM,
+    SYSMAPMMIO, SYSYIELD,
 };
 
 /// The exit status a faulted process is marked with: distinct from a clean
@@ -247,6 +248,16 @@ struct Process {
     /// for the process's life (the page is not freed this arc).  Read-only
     /// after `spawn`; the switch path reads it to install the TTBR0.
     aspace: crate::aspace::Aspace,
+    /// The process's heap: a `brk`-style top watermark in its own `Aspace`
+    /// (TTBR0 only, the process's to use).  `heap_base` is the floor (just
+    /// above the user stack, set at spawn); the mapped range is
+    /// `[heap_base, heap_brk)`, page-aligned; `heap_hwm` is the highest top
+    /// reached, so a regrow after a `SYS_FREE` reuses the already-mapped pages
+    /// in `[heap_brk, heap_hwm)` instead of re-mapping (and double-allocating)
+    /// them.  Touched only under the table lock (module docs).
+    heap_base: usize,
+    heap_brk: usize,
+    heap_hwm: usize,
 }
 
 /// One optional process per slot, all empty.  Spelled out rather than
@@ -543,7 +554,10 @@ fn spawn_raw(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     // The user stack pointer leaves 16 bytes of headroom below the page's top
     // (the frame's SP must stay inside the page — see forkret_context).
     let user_sp = stack_va + mem::PAGE_SIZE_4K - 16;
-    install(aspace, text_va, user_sp)
+    // The heap base: just above the one stack page — page-aligned (it is), in
+    // the user half (the caller's stack_va is), and clear of the text page.
+    // The heap grows up from here toward the user-half edge.
+    install(aspace, text_va, user_sp, stack_va + mem::PAGE_SIZE_4K)
 }
 
 /// The image base a server is linked at: the shared [`port::user::IMAGE_BASE`],
@@ -686,7 +700,9 @@ fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
         unsafe { core::ptr::copy_nonoverlapping(pair.as_ptr(), kptr, 8) };
     }
     let user_sp = stack_base + STACK_PAGES * mem::PAGE_SIZE_4K - 16;
-    install(aspace, image.entry as usize, user_sp)
+    // The heap base: just above the stack (page-aligned and in the user half —
+    // the stack's top page is < KZERO, checked by the segment placement above).
+    install(aspace, image.entry as usize, user_sp, stack_base + STACK_PAGES * mem::PAGE_SIZE_4K)
 }
 
 /// Claim a free slot and store a new process with the given `Aspace`, entry
@@ -695,7 +711,12 @@ fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
 /// built and what the entry/stack point at.  Called after the `Aspace` is
 /// fully built (the page allocs already ran, outside the table lock).
 #[cfg(target_os = "none")]
-fn install(aspace: crate::aspace::Aspace, elr: usize, user_sp: usize) -> ProcessId {
+fn install(
+    aspace: crate::aspace::Aspace,
+    elr: usize,
+    user_sp: usize,
+    heap_base: usize,
+) -> ProcessId {
     let node = LockNode::new();
     // A slot is free when it is empty or already Exited: reclaiming is
     // lazy, and a slot is never overwritten while a raw pointer to its
@@ -715,6 +736,14 @@ fn install(aspace: crate::aspace::Aspace, elr: usize, user_sp: usize) -> Process
     };
     let kstack = unsafe { KSTACKS.stacks.get().cast::<u8>().add(id * KSTACK_SZ) };
     let context = forkret_context(id, elr, user_sp);
+    // The heap base must be page-aligned (the brk is page-granular) and in the
+    // user half (the heap grows toward the user-half edge, never into the
+    // kernel).  A base that violates either is a spawn bug — assert it rather
+    // than hand the process a heap it cannot grow.
+    assert!(
+        heap_base.is_multiple_of(mem::PAGE_SIZE_4K) && heap_base < crate::param::KZERO,
+        "heap base {heap_base:#x} is not page-aligned or is outside the user half",
+    );
     let proc = Process {
         state: State::Runnable,
         context,
@@ -722,6 +751,9 @@ fn install(aspace: crate::aspace::Aspace, elr: usize, user_sp: usize) -> Process
         exit_status: 0,
         prio: PriorityState::new(DEFAULT_PRIORITY),
         aspace,
+        heap_base,
+        heap_brk: heap_base,
+        heap_hwm: heap_base,
     };
     table[id] = Some(proc);
     id
@@ -1247,6 +1279,95 @@ pub(crate) fn current_aspace() -> Option<&'static crate::aspace::Aspace> {
     Some(unsafe { &(*current).aspace })
 }
 
+// The heap `brk` math, pure over the three watermarks so it is host-testable
+// without the `target_os = "none"` process representation (the table, the
+// kstacks, the Aspace).  `grow` rounds a byte request up to whole pages and
+// returns the new top watermark, or `None` when it would cross `bound` (the
+// user-half edge — the top-of-heap *error*, not a fault into the MMIO region).
+// `shrink` lowers the brk to a page within `[base, brk]` (a `brk`-style
+// free-the-top) or returns `None` to leave it: a `va` outside the heap, or not
+// page-aligned, is a no-op, not a fault.
+#[cfg(any(target_os = "none", test))]
+fn brk_grow(brk: usize, count: usize, bound: usize) -> Option<usize> {
+    let page = port::mem::PAGE_SIZE_4K;
+    let pages = count.div_ceil(page);
+    // Checked: a request whose page count overflows is a request that cannot
+    // fit under the bound, so it is the error, not a panic.
+    let add = pages.checked_mul(page)?;
+    let new_brk = brk.checked_add(add)?;
+    (new_brk <= bound).then_some(new_brk)
+}
+
+#[cfg(any(target_os = "none", test))]
+fn brk_shrink(base: usize, brk: usize, va: usize) -> Option<usize> {
+    (va.is_multiple_of(port::mem::PAGE_SIZE_4K) && va >= base && va <= brk).then_some(va)
+}
+
+/// Grow the current process's heap by `count` bytes (`brk`-style, page
+/// granular).  The grant is `[old_brk, new_brk)`; only the pages above the
+/// high-water mark are mapped (the rest are already mapped, from a grow a later
+/// `SYS_FREE` released), each into the process's TTBR0 only.  Returns the
+/// grant's start — the old brk, page-aligned — or `None` when the grant would
+/// cross the user-half edge or a page cannot be mapped.  Runs under the table
+/// lock (the heap fields are touched under it; the lock is dropped before the
+/// handler returns, so no switch is self-deadlocked).
+#[cfg(target_os = "none")]
+pub(crate) fn heap_grow(count: u64) -> Option<usize> {
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    let current = unsafe { tpidr_current() };
+    if current.is_null() {
+        return None;
+    }
+    let id = table.iter().position(|slot| {
+        matches!(slot, Some(p) if (p as *const Process as *const ()) == (current as *const Process as *const ()))
+    })?;
+    let p = table.get_mut(id).and_then(|slot| slot.as_mut())?;
+    let old_brk = p.heap_brk;
+    let new_brk = brk_grow(old_brk, count as usize, crate::param::KZERO)?;
+    // Map only the pages above the high-water mark; `[hwm, new_brk)` are the
+    // genuinely new ones, the pages below were already mapped (and are below
+    // the brk a SYS_FREE released, so they are reused, not re-mapped).
+    let mut page = p.heap_hwm;
+    while page < new_brk {
+        if p.aspace.map_user_data_page(page).is_err() {
+            // Out of physical pages mid-grant: record how far the mapping got
+            // (those pages are mapped and tracked) and return the error without
+            // advancing the brk — a retry re-maps from here, not the pages below.
+            p.heap_hwm = page;
+            return None;
+        }
+        page += port::mem::PAGE_SIZE_4K;
+    }
+    p.heap_brk = new_brk;
+    p.heap_hwm = new_brk;
+    Some(old_brk)
+}
+
+/// Lower the current process's heap to `va` (`brk`-style free-the-top): the
+/// brk moves to `va` and the released pages stay mapped (a later grow reuses
+/// them via the high-water mark, so nothing is unmapped — pages are not freed
+/// this arc).  A `va` outside the heap, or not page-aligned, is a no-op.
+/// Runs under the table lock (dropped before the handler returns).
+#[cfg(target_os = "none")]
+pub(crate) fn heap_shrink(va: u64) {
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    let current = unsafe { tpidr_current() };
+    if current.is_null() {
+        return;
+    }
+    let id = table.iter().position(|slot| {
+        matches!(slot, Some(p) if (p as *const Process as *const ()) == (current as *const Process as *const ()))
+    });
+    let Some(id) = id else { return };
+    let Some(p) = table.get_mut(id).and_then(|slot| slot.as_mut()) else { return };
+    if let Some(new_brk) = brk_shrink(p.heap_base, p.heap_brk, va as usize) {
+        p.heap_brk = new_brk;
+        // heap_hwm is unchanged: the released pages stay mapped.
+    }
+}
+
 // Host (unit-test) builds have no table, no kstacks, and no switch;
 // the constants above are what they exercise.
 #[cfg(not(target_os = "none"))]
@@ -1313,6 +1434,51 @@ mod tests {
         assert_eq!(SYSIRQCLAIM, r9x_abi::SYSIRQCLAIM);
         assert_eq!(SYSMAPMMIO, r9x_abi::SYSMAPMMIO);
         assert_eq!(SYSYIELD, r9x_abi::SYSYIELD);
+        assert_eq!(SYS_ALLOC, r9x_abi::SYS_ALLOC);
+        assert_eq!(SYS_FREE, r9x_abi::SYS_FREE);
+    }
+
+    // The heap brk math: round-up to a page, monotonic page-granular growth,
+    // the top-bound *error* (not a fault), and the free-the-top clamp.
+    const P: usize = port::mem::PAGE_SIZE_4K;
+
+    #[test]
+    fn brk_grow_rounds_up_to_pages() {
+        // A sub-page request takes one page; a whole-page request takes exactly
+        // that many; a zero request takes none (the brk is unchanged).
+        assert_eq!(brk_grow(0x1000, 1, 0x10000), Some(0x1000 + P));
+        assert_eq!(brk_grow(0x1000, 3 * P, 0x10000), Some(0x1000 + 3 * P));
+        assert_eq!(brk_grow(0x1000, 0, 0x10000), Some(0x1000));
+    }
+
+    #[test]
+    fn brk_grow_is_monotonic_and_page_granular() {
+        let a = brk_grow(0x2000, 100, 0x10000).unwrap();
+        let b = brk_grow(a, 1, 0x10000).unwrap();
+        assert!(b > a, "growth is monotonic ({a:#x} -> {b:#x})");
+        assert!(a.is_multiple_of(P) && b.is_multiple_of(P), "the brk stays page-aligned");
+    }
+
+    #[test]
+    fn brk_grow_refuses_to_cross_the_bound() {
+        // Reaching exactly the bound is allowed (brk == bound); one page past
+        // it is the error — a clean `None`, not a fault into the MMIO region.
+        let bound = 0x10000;
+        assert_eq!(brk_grow(bound - P, P, bound), Some(bound));
+        assert_eq!(brk_grow(bound, 1, bound), None);
+        assert_eq!(brk_grow(bound - P, 2 * P, bound), None);
+    }
+
+    #[test]
+    fn brk_shrink_clamps_to_the_heap() {
+        let (base, brk) = (0x1000, 0x5000);
+        // A page within the heap lowers the brk; the base itself is allowed.
+        assert_eq!(brk_shrink(base, brk, 0x3000), Some(0x3000));
+        assert_eq!(brk_shrink(base, brk, base), Some(base));
+        // Below the base, above the brk, or not page-aligned: a no-op.
+        assert_eq!(brk_shrink(base, brk, 0x0), None);
+        assert_eq!(brk_shrink(base, brk, 0x6000), None);
+        assert_eq!(brk_shrink(base, brk, 0x3001), None);
     }
 
     fn s(state: State, prio: Priority) -> (State, Priority) {

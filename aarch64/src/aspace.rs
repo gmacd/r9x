@@ -175,6 +175,37 @@ impl Aspace {
         Ok(physaddr_as_ptr_mut_offset_from_kzero::<u8>(page_pa))
     }
 
+    /// Map a fresh physical page into this AS at `va` for the process's heap:
+    /// TTBR0 only (the process sees the page at `va`), with normal read/write
+    /// data attributes, and NO kernel identity map (unlike [`map_user_page`]).
+    /// The heap is the process's to use exclusively — the kernel neither reads
+    /// nor writes it — so it must not also appear in TTBR1, where the process's
+    /// heap bytes would become kernel-reachable.  Returns `()` (the kernel has
+    /// no pointer to hand back); the process reaches the page at `va`.
+    pub fn map_user_data_page(&self, va: usize) -> Result<(), PageAllocError> {
+        // A fresh physical page, mapped into the process's TTBR0 only (the
+        // single mapping, `rw_user_data`).  No TTBR1 identity map: that is what
+        // distinguishes a heap page from the text/data a server is loaded with
+        // (which the kernel writes, and so must also be reachable from TTBR1).
+        let page_pa = pagealloc::allocate_physpage()?;
+        let range = PhysRange::with_pa_len(page_pa, PAGE_SIZE_4K);
+        let mut physpage_allocator = PhysPageAllocator {};
+        let mut vmtrait_impl = VmTraitImpl {};
+        unsafe { &mut *self.root }
+            .map_phys_range(
+                &mut physpage_allocator,
+                &mut vmtrait_impl,
+                "aspace-heap",
+                &range,
+                VaMapping::Addr(va),
+                Entry::rw_user_data(),
+                crate::vm::PageSize::Page4K,
+                RootPageTableType::User,
+            )
+            .map_err(|_| PageAllocError::UnableToMap)?;
+        Ok(())
+    }
+
     /// Map a device's MMIO range into this AS at `va` (the process sees the
     /// device registers).  Does NOT map into TTBR1 (the kernel does not need
     /// the device page; the server owns it exclusively).  The range must be

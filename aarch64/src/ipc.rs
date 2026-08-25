@@ -361,6 +361,30 @@ pub(crate) fn sys_map_mmio(pa: u64, va: u64) -> u64 {
     }
 }
 
+/// SYSALLOC: x0 = byte count.  Grows the current process's heap (page-
+/// granular, `brk`-style) into its TTBR0 and returns x0 = the first user VA of
+/// the grant (page-aligned, the old watermark).  On failure — the grant would
+/// cross the user-half edge, or a page cannot be mapped — returns 1: a small
+/// error code that can never be a heap VA (those are page-aligned, at or above
+/// the first heap page).  The kernel is device-dumb: it provides the pages, the
+/// process decides how to use them (the QNX model).
+#[cfg(target_os = "none")]
+pub(crate) fn sys_alloc(count: u64) -> u64 {
+    match process::heap_grow(count) {
+        Some(va) => va as u64,
+        None => 1,
+    }
+}
+
+/// SYSFREE: x0 = a heap VA.  Lowers the current process's heap top to it
+/// (`brk`-style free-the-top; the released pages stay mapped for a later grow).
+/// A `va` outside the heap or not page-aligned is a no-op.  Always returns 0.
+#[cfg(target_os = "none")]
+pub(crate) fn sys_free(va: u64) -> u64 {
+    process::heap_shrink(va);
+    0
+}
+
 /// SYCCREATECHAN: no arguments.  Returns the x0 result — a fresh channel
 /// handle on success, `ERR_NO_SLOT` when the table is full (a live process
 /// must not panic the table; the kernel-side [`create`] panics, this does not).
@@ -459,6 +483,16 @@ pub(crate) fn sys_irq_claim(_intid: u64, _handle: u64) -> u64 {
 
 #[cfg(not(target_os = "none"))]
 pub(crate) fn sys_map_mmio(_pa: u64, _va: u64) -> u64 {
+    0
+}
+
+#[cfg(not(target_os = "none"))]
+pub(crate) fn sys_alloc(_count: u64) -> u64 {
+    0
+}
+
+#[cfg(not(target_os = "none"))]
+pub(crate) fn sys_free(_va: u64) -> u64 {
     0
 }
 

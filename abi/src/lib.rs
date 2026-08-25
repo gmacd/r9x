@@ -29,6 +29,12 @@ pub const IMAGE_BASE: usize = 0x10_0000;
 /// its stack by a wide margin.
 pub const HANDLES_VA: usize = 0x100_0000;
 
+/// The target's page size in bytes (4 KiB on all three architectures).  The
+/// kernel's heap grant is page-granular — a `SYS_ALLOC` rounds the request up
+/// to whole pages and returns a page-aligned VA — so the user-space allocator
+/// shares the constant to round its own requests and to know a grant's size.
+pub const PAGE_SIZE: usize = 4096;
+
 /// The payload bound: an IPC message carries at most `MSG_MAX` payload bytes.
 /// 256, QNX's classic message size: the fast path is a 256-byte move, not a
 /// copy of unbounded data.
@@ -83,3 +89,19 @@ pub const SYSMAPMMIO: u64 = 20;
 /// Create a channel.  No arguments.  Result in arg0 — a fresh channel handle
 /// on success, an error code when the channel table is full.
 pub const SYCCREATECHAN: u64 = 21;
+
+/// Grow the current process's heap by `arg0` bytes, `brk`-style: the request is
+/// rounded up to whole pages and granted from a per-process top watermark.  On
+/// return arg0 = the first user VA of the new range (page-aligned, the old
+/// watermark), or a non-zero error code when the grant would cross the top of
+/// the user half (the region a server may map its MMIO into).  The pages are
+/// mapped into the process's TTBR0 only — no kernel identity map — because the
+/// heap is the process's to use and the kernel neither reads nor writes it.
+pub const SYS_ALLOC: u64 = 22;
+
+/// Lower the current process's heap top to `arg0` (a page-aligned VA within
+/// the heap), `brk`-style free-the-top.  The released pages stay mapped and are
+/// reused by a later grow, so nothing is unmapped; a general free that
+/// coalesces holes in the middle of the heap is a refinement, not this.  Always
+/// returns 0.
+pub const SYS_FREE: u64 = 23;
