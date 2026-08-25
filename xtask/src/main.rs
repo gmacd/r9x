@@ -955,6 +955,10 @@ impl ClippyStep {
     }
 
     fn run(self) -> Result<()> {
+        // A server-embedding image's build.rs stages the server's ELF; build
+        // it before any lint pass so such an image finds it.
+        ServerStep::new(self.arch, self.profile, self.verbose).run()?;
+
         // Libs and bins, linted the way the kernel is built.
         let mut cmd = self.command();
         cmd.arg("--workspace");
@@ -994,9 +998,6 @@ impl ClippyStep {
         // a host, where a no_std kernel image cannot compile.  They are
         // named one at a time because --tests would also ask for the lib
         // unit tests, which need libtest and so need a host.
-        // A server-embedding image's build.rs stages the server's ELF; build
-        // it before linting so such an image finds it.
-        ServerStep::new(self.arch, self.profile, self.verbose).run()?;
         for name in IntegrationTestStep::test_names(self.arch)? {
             let mut cmd = self.command();
             cmd.arg("--package").arg(&package);
