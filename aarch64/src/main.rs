@@ -149,6 +149,11 @@ pub extern "C" fn main9(dtb_va: usize) {
     process::spawn(&process::Image::Elf { bytes: CONSOLE_ELF, handles: Some(ns_handles) });
     process::spawn(&process::Image::Elf { bytes: INIT_ELF, handles: None });
 
+    // The console server is up (spawned; its BIND is processed during the
+    // first run_all).  Gate off the kernel's normal output: from here on,
+    // println! is dropped.  The iprint path (debug/fault) is unaffected.
+    port::devcons::set_console_live();
+
     // The system is live. `run_all` runs the processes to a fixpoint: the
     // nameserver is blocked on its receive loop, the console server on its
     // post-bind receive, and init on its receive.  When all are blocked, the

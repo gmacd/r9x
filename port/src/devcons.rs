@@ -26,6 +26,22 @@ pub trait Uart {
 
 static CONS: Lock<Option<&'static dyn Uart>> = Lock::new("cons", None);
 
+/// Once the console server is up, the kernel stops using the PL011 for normal
+/// output.  This flag gates the `println!` path (the locked `Console`);
+/// the `iprint` path (direct polled write, no lock) is the debug backstop and
+/// is never gated.  Set once during bringup, never cleared (one-way): the
+/// console server does not die in this design (no death hook; stage 7's
+/// concern if that changes).
+static CONSOLE_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// Set the console-live gate: from this point on, `println!` output is
+/// dropped (the console server owns the UART for normal output).  The
+/// `iprint` path is unaffected.  Call once during bringup, after the console
+/// server has been spawned.
+pub fn set_console_live() {
+    CONSOLE_LIVE.store(true, Ordering::Release);
+}
+
 /// Console is what should be used in almost all cases, as it ensures threadsafe
 /// use of the console.
 pub struct Console;
@@ -41,11 +57,18 @@ impl Console {
     }
 
     pub fn putstr(&mut self, s: &str) {
-        // XXX: Just for testing.
-
         // The console lock is thread-context only; interrupt context
         // must use iprint, which bypasses it.
         debug_assert!(!crate::irq::in_interrupt(), "println in interrupt context; use iprintln");
+
+        // Once the console server is up, normal kernel output is dropped:
+        // the server owns the UART for user-facing text.  The `iprint` path
+        // (direct polled write, no lock) is the debug backstop and is never
+        // gated.
+        if CONSOLE_LIVE.load(Ordering::Acquire) {
+            return;
+        }
+
         let node = LockNode::new();
         let uart_guard = CONS.lock(&node);
         if let Some(uart) = *uart_guard {
