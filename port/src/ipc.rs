@@ -22,10 +22,11 @@
 //! opcode and the tag; the payload is opaque (a server's protocol is its own
 //! encoding of `buf`).
 
-/// The payload bound: a [`Message`] carries at most `MSG_MAX` payload bytes.
-/// 256, QNX's classic message size: the fast path is a 256-byte move, not a
-/// copy of unbounded data.
-pub const MSG_MAX: usize = 256;
+// Re-exported from `r9x_abi`, the single source both the kernel and the
+// `r9x_std` target read, so build, loader, and servers cannot drift (a
+// pinning test asserts they match).  The uses below (`[u8; MSG_MAX]`, …) refer
+// to this re-export.
+pub use r9x_abi::MSG_MAX;
 
 /// The bounded, tagged, fixed message.  `opcode` dispatches, `tag` correlates
 /// a reply to its request, `buf`/`len` carry the (opaque) payload.

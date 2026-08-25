@@ -1,10 +1,11 @@
-use crate::{fdt::RegBlock, maths};
+use crate::maths;
 use core::{
     cmp::{max, min},
     fmt,
     iter::{Step, StepBy},
     ops::{self, Range},
 };
+use r9x_core::fdt::RegBlock;
 
 pub const PAGE_SIZE_4K: usize = 4 << 10;
 pub const PAGE_SIZE_2M: usize = 2 << 20;

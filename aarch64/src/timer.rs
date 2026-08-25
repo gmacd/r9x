@@ -14,10 +14,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 
 use port::Result;
-use port::fdt::DeviceTree;
 use port::irq::IrqGuard;
 use port::mcslock::{Lock, LockNode};
 use port::once::Once;
+use r9x_core::fdt::DeviceTree;
 
 use crate::gic;
 use crate::reg::cnt_el0::{CntFrqEl0, CntKctlEl1, CntPctEl0, CntpCtlEl0, CntpCvalEl0};
@@ -361,7 +361,7 @@ pub fn interrupt_handler() {
 mod tests {
     use super::*;
     use crate::reg::cnt_el0::{mock_kctl, set_mock_count, set_mock_freq, set_mock_kctl};
-    use port::fdt::DeviceTree;
+    use r9x_core::fdt::DeviceTree;
     use std::sync::{Mutex, MutexGuard};
 
     /// The Pi 4's DTB — the same file the aarch64 QEMU run uses —

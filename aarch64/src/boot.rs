@@ -8,9 +8,9 @@
 //! console maps its UART registers, so it cannot come up before the page
 //! allocator that backs those mappings.
 
-use port::fdt::DeviceTree;
 use port::mem::{PhysAddr, PhysRange};
 use port::pagealloc::PageAllocError;
+use r9x_core::fdt::DeviceTree;
 
 use crate::kmem::{
     boottext_physrange, bss_physrange, data_physrange, rodata_physrange, text_physrange,

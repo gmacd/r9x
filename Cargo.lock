@@ -10,6 +10,8 @@ dependencies = [
  "bitstruct",
  "num_enum",
  "port",
+ "r9x-abi",
+ "r9x-core",
 ]
 
 [[package]]
@@ -158,6 +160,9 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 [[package]]
 name = "console"
 version = "0.1.0"
+dependencies = [
+ "r9x-std",
+]
 
 [[package]]
 name = "equivalent"
@@ -190,6 +195,9 @@ dependencies = [
 [[package]]
 name = "init"
 version = "0.1.0"
+dependencies = [
+ "r9x-std",
+]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -200,6 +208,9 @@ checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
 [[package]]
 name = "nameserver"
 version = "0.1.0"
+dependencies = [
+ "r9x-std",
+]
 
 [[package]]
 name = "num_enum"
@@ -233,6 +244,8 @@ name = "port"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.9.4",
+ "r9x-abi",
+ "r9x-core",
 ]
 
 [[package]]
@@ -254,6 +267,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "r9x-abi"
+version = "0.1.0"
+
+[[package]]
+name = "r9x-core"
+version = "0.1.0"
+
+[[package]]
+name = "r9x-std"
+version = "0.1.0"
+dependencies = [
+ "r9x-abi",
+ "r9x-core",
+]
+
+[[package]]
 name = "raw-cpuid"
 version = "10.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -267,6 +296,7 @@ name = "riscv64"
 version = "0.1.0"
 dependencies = [
  "port",
+ "r9x-core",
  "sbi-rt",
 ]
 

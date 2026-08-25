@@ -4,8 +4,8 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(not(test), no_main)]
 
-use port::fdt::DeviceTree;
 use port::println;
+use r9x_core::fdt::DeviceTree;
 use riscv64::platform::{devcons, platform_init};
 use riscv64::sbi;
 

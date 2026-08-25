@@ -12,6 +12,7 @@ autotests = false
 
 [dependencies]
 port = { path = "../port" }
+r9x-core = { path = "../userland/core" }
 sbi-rt = "0.0.3"
 
 [features]

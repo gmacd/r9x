@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 bitflags = "2.5"
+r9x-abi = { path = "../userland/abi" }
+r9x-core = { path = "../userland/core" }
 
 [lints]
 workspace = true

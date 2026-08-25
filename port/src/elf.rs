@@ -5,7 +5,7 @@
 //! the user-binary-loading plan). Pure: no I/O, no allocation, no arch
 //! dependency — it reads the bytes in place and records their coordinates, so
 //! the loader maps `&elf[offset..offset + filesz]` itself. Follows the
-//! `port::fdt` precedent: a host-testable parser that turns an image byte blob
+//! `r9x_core::fdt` precedent: a host-testable parser that turns an image byte blob
 //! into validated structure.
 //!
 //! Only *structure* is validated here: the magic, ELF64-ness, little-endian,

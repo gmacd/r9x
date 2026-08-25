@@ -48,55 +48,15 @@ use port::mcslock::{Lock, LockNode};
 #[cfg(target_os = "none")]
 use port::{iprintln, mem};
 
-/// x8 value for exit: the process asks to be killed.  The syscall
-/// number is x8 at the trap — this kernel's own convention (Linux
-/// arm64 also uses x8, with x0-x5 as arguments; the svc immediate in
-/// ESR_EL1.ISS is not used) — so a terminate-with-status is `mov
-/// x8, #n; svc #0`.  x8 doubles as the exit status, so status 1 is
-/// not expressible (1 is yield) and every new syscall number retires
-/// one exit status; revisit when a second real syscall lands.
-pub const SYSEXIT: u64 = 0;
-
-/// x8 value for yield: return to the process; if another process is
-/// Runnable, the handler's `resched` switches to it first.
-pub const SYSYIELD: u64 = 1;
-
-/// x8 value for send on a channel: x0 = channel handle, x1 = user buffer
-/// pointer, x2 = buffer length, x3 = opcode, x4 = tag.  The result (0 on
-/// success, an error otherwise) is in x0 on return; the process continues.
-/// 16-18 sit above the exit-status range (0-15) the test images use.
-pub const SYCSEND: u64 = 16;
-
-/// x8 value for receive from a channel: x0 = channel handle, x1 = user buffer
-/// pointer, x2 = buffer capacity.  On return x0 = opcode, x3 = the bytes
-/// copied, x4 = tag (a closed channel puts an error in x0); the process
-/// continues.  A receive with no message queued blocks the process.
-pub const SYCRECEIVE: u64 = 17;
-
-/// x8 value for reply on a channel: x0 = channel handle, x1 = user buffer
-/// pointer, x2 = buffer length, x4 = tag.  The result is in x0; the process
-/// continues.  A reply whose message tag differs from the reply's tag
-/// returns an error and sends nothing.
-pub const SYCREPLY: u64 = 18;
-
-/// x8 value to claim a hardware interrupt for the current process: x0 = INTID,
-/// x1 = channel handle.  The kernel adds the routing table entry and enables
-/// the interrupt at the GIC distributor.  The result is in x0 (0 on success,
-/// an error code on failure).  The process continues.
-pub const SYSIRQCLAIM: u64 = 19;
-
-/// x8 value to map a physical page into the current process's TTBR0 with
-/// Device memory attributes: x0 = physical address (page-aligned),
-/// x1 = user VA.  The kernel maps the page into the process's address space
-/// only (no TTBR1 mapping; the server owns the MMIO exclusively).  The result
-/// is in x0 (0 on success, 1 on failure).  The process continues.
-pub const SYSMAPMMIO: u64 = 20;
-
-/// x8 value to create a channel: no arguments.  The result is in x0 — a
-/// fresh channel handle on success, an error code when the channel table is
-/// full (a live process must not panic the table, so a full table is an
-/// error, not the kernel-side `create()`'s assert).  The process continues.
-pub const SYCCREATECHAN: u64 = 21;
+// The syscall numbers are the user-facing trap ABI, defined once in
+// `r9x_abi` (the single source both the kernel and the `r9x_std` target read)
+// and re-exported here so the existing `process::SYS*`/`SYC*` paths keep
+// working; a pinning test asserts they match.  The aarch64 register convention
+// (the number in x8, arguments in x0-x4) is spelled where the trap frame is
+// laid out.
+pub use r9x_abi::{
+    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
+};
 
 /// The exit status a faulted process is marked with: distinct from a clean
 /// exit (which uses the svc number, 0–15 in the test images), so an image can
@@ -1340,6 +1300,20 @@ pub fn preemptions() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Decision 3 fallback: the syscall numbers `process` re-exports must equal
+    /// `r9x_abi`, the single source both the kernel and the `r9x_std` target read.
+    #[test]
+    fn syscall_numbers_match_r9x_abi() {
+        assert_eq!(SYCCREATECHAN, r9x_abi::SYCCREATECHAN);
+        assert_eq!(SYCRECEIVE, r9x_abi::SYCRECEIVE);
+        assert_eq!(SYCREPLY, r9x_abi::SYCREPLY);
+        assert_eq!(SYCSEND, r9x_abi::SYCSEND);
+        assert_eq!(SYSEXIT, r9x_abi::SYSEXIT);
+        assert_eq!(SYSIRQCLAIM, r9x_abi::SYSIRQCLAIM);
+        assert_eq!(SYSMAPMMIO, r9x_abi::SYSMAPMMIO);
+        assert_eq!(SYSYIELD, r9x_abi::SYSYIELD);
+    }
 
     fn s(state: State, prio: Priority) -> (State, Priority) {
         (state, prio)

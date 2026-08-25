@@ -4,9 +4,9 @@ use crate::deviceutil::{find_dt_physrange, map_device_register};
 use crate::io::{read_reg, write_reg};
 use crate::vm;
 use port::Result;
-use port::fdt::DeviceTree;
 use port::mcslock::{Lock, LockNode};
 use port::mem::{PhysAddr, PhysRange, VirtRange};
+use r9x_core::fdt::DeviceTree;
 
 #[cfg(target_os = "none")]
 use port::println;

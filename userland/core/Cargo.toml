@@ -1,0 +1,11 @@
+[package]
+name = "r9x-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "r9x_core"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

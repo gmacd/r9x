@@ -1,0 +1,27 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "console"
+version = "0.1.0"
+edition = "2024"
+# Cross-linted the way the kernel is: `clippy --workspace` builds it for this
+# target.  The *artifact* build (xtask's ServerStep) overrides it with the r9
+# target spec, `build-std=core,alloc`, and the --image-base / -e link flags.
+default-target = "aarch64-unknown-none"
+
+# A user-space server: a bare-metal `no_std` bin the kernel loads as an ELF.
+# The first real server — it maps the PL011 UART into its own address space,
+# writes a byte, and exits.  Aarch64-only for the arc: the per-process
+# `Aspace` the loader needs has only landed for aarch64.  Built by `cargo
+# xtask` (ServerStep), not by a bare `cargo build`.
+#
+# Links `r9x_std`, the curated r9 facade: the syscall core, the runtime entry
+# and the heap, replacing the platform `std`.  It knows its own platform (the
+# PL011 address is a BCM2711 constant) and requests its MMIO mapping itself —
+# the kernel is device-dumb (QNX model).
+
+[dependencies]
+r9x-std = { path = "../../std" }
+
+[lints]
+workspace = true

@@ -37,17 +37,15 @@ fn main() {
         }
         _ => root.join("target"),
     };
-    // The staged ELFs sit under the aarch64 JSON-spec target name (a fixed
-    // part of the repo) — not `TARGET`, which varies by how this crate is
-    // being built: a JSON-spec build and the host-toolchain check step use
-    // different target names for it.
+    // The staged ELFs sit under the user-space target name (`r9x-aarch64`, the
+    // spec's filename stem) — a fixed part of the repo, not `TARGET`, which
+    // varies by how this crate is being built: a JSON-spec build and the
+    // host-toolchain check step use different target names for it.  It must
+    // match xtask's `Arch::user_target` (the two stage the same paths).
     let profile = std::env::var("PROFILE").expect("PROFILE");
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     for server in SERVERS {
-        let elf = target_dir
-            .join("aarch64-unknown-none-elf")
-            .join(&profile)
-            .join(format!("{server}.elf"));
+        let elf = target_dir.join("r9x-aarch64").join(&profile).join(format!("{server}.elf"));
 
         // Rebuild this script — and so the embedding image — when this
         // server's ELF changes: the edge of the "change the server, the image

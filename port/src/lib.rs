@@ -12,7 +12,6 @@ pub mod bitmapalloc;
 pub mod dat;
 pub mod devcons;
 pub mod elf;
-pub mod fdt;
 pub mod ipc;
 pub mod irq;
 pub mod maths;
@@ -24,3 +23,18 @@ pub mod qemu;
 pub mod user;
 
 pub type Result<T> = core::result::Result<T, &'static str>;
+
+#[cfg(test)]
+mod tests {
+    //! Decision 3 fallback: the kernel's re-exports of the shared ABI constants
+    //! must equal [`r9x_abi`], the single source both the kernel and the
+    //! `r9x_std` target read.  The re-exports make this hold by construction;
+    //! the test guards against a divergent re-hardcode.
+
+    #[test]
+    fn abi_constants_match_r9x_abi() {
+        assert_eq!(crate::ipc::MSG_MAX, r9x_abi::MSG_MAX);
+        assert_eq!(crate::user::HANDLES_VA, r9x_abi::HANDLES_VA);
+        assert_eq!(crate::user::IMAGE_BASE, r9x_abi::IMAGE_BASE);
+    }
+}

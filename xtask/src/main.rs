@@ -76,6 +76,19 @@ impl Arch {
         env_or("TARGET", format!("{}-unknown-none-elf", self.to_string().to_lowercase()).as_str())
     }
 
+    /// The target-dir name cargo uses for the user-space build: the spec's
+    /// filename stem, `r9x-<arch>`, distinct from the kernel's `<target>` dir.
+    fn user_target(&self) -> String {
+        format!("r9x-{}", self.to_string().to_lowercase())
+    }
+
+    /// The user-space target spec for the server build: `userland/specs/
+    /// r9x-<arch>.json`, distinct from the kernel's `lib/<target>.json` (its
+    /// `os` is `"r9"`, so the compiler swaps in `r9x_std` for `std`).
+    fn user_spec(&self) -> String {
+        format!("userland/specs/{}.json", self.user_target())
+    }
+
     /// The `default-target` value in the arch's `Cargo.toml`: what a server's
     /// `Cargo.toml` must say in its `default-target` to be recognised as
     /// belonging to this arch.
@@ -881,7 +894,13 @@ impl TestStep {
         // <arch>-unknown-linux-gnu target instead, which is why
         // rust-toolchain.toml names one for aarch64.  riscv64 and x86_64
         // have no tests today; the selection still runs whatever is added.
-        let mut packages: Vec<String> = vec!["port".to_string()];
+        // `port` and the `userland/` target crates are host-buildable pure
+        // Rust (no bare-metal entry symbol), so their tests run on any host.
+        // The arch packages are the bare-metal ones that only run natively.
+        // (`r9x-abi` has no tests yet; `r9x-std` is added by its task, once
+        // its lang items are gated to `os = "r9"` so a host build does not
+        // collide with `std`'s own.)
+        let mut packages: Vec<String> = vec!["port".to_string(), "r9x-core".to_string()];
         let mut skipped = Vec::new();
         for arch in Arch::ALL {
             if arch.package() == host {
@@ -1055,9 +1074,12 @@ impl ServerStep {
         Self { arch, profile, verbose }
     }
 
-    /// The staged ELF for `server`.
+    /// The staged ELF for `server` (staged from the user-target build dir).
     fn elf(&self, server: &str) -> PathBuf {
-        target_dir().join(self.arch.target()).join(self.profile.dir()).join(format!("{server}.elf"))
+        target_dir()
+            .join(self.arch.user_target())
+            .join(self.profile.dir())
+            .join(format!("{server}.elf"))
     }
 
     fn run(self) -> Result<()> {
@@ -1068,23 +1090,20 @@ impl ServerStep {
             cmd.current_dir(workspace());
             cmd.arg("build");
             cmd.arg("-p").arg(server);
-            cmd.arg("--target").arg(format!("lib/{}.json", self.arch.target()));
+            cmd.arg("--target").arg(self.arch.user_spec());
             if self.profile == Profile::Release {
                 cmd.arg("--release");
             }
-            cmd.arg("-Z").arg("build-std=core");
+            cmd.arg("-Z").arg("build-std=core,alloc");
             cmd.arg("-Z").arg("json-target-spec");
-            // The user-binary format: static, non-PIE, fixed-base.  The base is
-            // the shared `port::user::IMAGE_BASE` the loader's placement check
-            // reads, so build and loader cannot drift.  `--image-base` sets the
-            // fixed base; `-e start` names the entry symbol, so the ELF's
-            // `e_entry` is the server's `start`.
+            // The user-binary format: a fixed-base ELF (the static relocation
+            // model is in the target spec).  The base is the shared
+            // `port::user::IMAGE_BASE` the loader's placement check reads, so
+            // build and loader cannot drift.  `--image-base` sets the fixed
+            // base; `-e start` names the entry symbol, so the ELF's `e_entry`
+            // is the server's `start`.
             let base = format!("0x{:x}", port::user::IMAGE_BASE);
-            let flags = [
-                "-Crelocation-model=static",
-                &format!("-Clink-arg=--image-base={base}"),
-                "-Clink-arg=-estart",
-            ];
+            let flags = [&format!("-Clink-arg=--image-base={base}"), "-Clink-arg=-estart"];
             cmd.arg("--config").arg(format!(
                 "build.rustflags=[{}]",
                 flags.iter().map(|f| config::toml_basic_string(f)).collect::<Vec<_>>().join(",")
@@ -1919,8 +1938,8 @@ fn exclude_other_arches(arch: Arch, cmd: &mut Command) {
     }
 }
 
-/// The workspace members under `servers/` whose `default-target` matches
-/// `arch`.  Returns their package names (the directory basename, which is
+/// The workspace members under `userland/servers/` whose `default-target`
+/// matches `arch`.  Returns their package names (the directory basename, which is
 /// the package name by convention).  The discovery is from the Cargo files
 /// themselves: a server belongs to an arch if its `default-target` says so,
 /// so adding a server for a new arch requires no xtask change.
@@ -1928,9 +1947,9 @@ fn servers_for(arch: Arch) -> Vec<String> {
     let want = arch.default_target();
     workspace_members()
         .into_iter()
-        .filter(|m| m.starts_with("servers/"))
+        .filter(|m| m.starts_with("userland/servers/"))
         .filter_map(|m| {
-            let name = m.trim_start_matches("servers/").to_string();
+            let name = m.trim_start_matches("userland/servers/").to_string();
             let ct = workspace().join(&m).join("Cargo.toml");
             let c = fs::read_to_string(&ct).unwrap_or_else(|e| panic!("read {ct:?}: {e}"));
             let table: toml::Table = c.parse().unwrap_or_else(|e| panic!("parse {ct:?}: {e}"));
@@ -1951,12 +1970,12 @@ fn exclude_foreign_servers(arch: Arch, cmd: &mut Command) {
     }
 }
 
-/// Every workspace member under `servers/`, regardless of arch.
+/// Every workspace member under `userland/servers/`, regardless of arch.
 fn all_servers() -> Vec<String> {
     workspace_members()
         .into_iter()
-        .filter(|m| m.starts_with("servers/"))
-        .map(|m| m.trim_start_matches("servers/").to_string())
+        .filter(|m| m.starts_with("userland/servers/"))
+        .map(|m| m.trim_start_matches("userland/servers/").to_string())
         .collect()
 }
 

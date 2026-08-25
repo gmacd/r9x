@@ -1,0 +1,11 @@
+[package]
+name = "r9x-std"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+r9x-abi = { path = "../abi" }
+r9x-core = { path = "../core" }
+
+[lints]
+workspace = true

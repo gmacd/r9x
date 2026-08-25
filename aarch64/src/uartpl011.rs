@@ -4,8 +4,8 @@ use crate::registers::{GPPUD, GPPUDCLK0};
 use crate::{mailbox, vm};
 use port::Result;
 use port::devcons::Uart;
-use port::fdt::DeviceTree;
 use port::mem::VirtRange;
+use r9x_core::fdt::DeviceTree;
 
 #[cfg(target_os = "none")]
 use port::println;

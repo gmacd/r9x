@@ -2,8 +2,9 @@ use aarch64_cpu::{
     asm::barrier::{self, dsb},
     registers::*,
 };
+use r9x_core::fdt::DeviceTree;
+
 use port::{
-    fdt::DeviceTree,
     mem::{PhysAddr, PhysRange, VirtRange},
     pagealloc::PageAllocError,
 };

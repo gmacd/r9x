@@ -5,25 +5,29 @@ name = "nameserver"
 version = "0.1.0"
 edition = "2024"
 # Cross-linted the way the kernel is: `clippy --workspace` builds it for this
-# target.  The *artifact* build (xtask's ServerStep) overrides it with the
-# bare-metal JSON spec plus the static / --image-base / -e link flags.
+# target.  The *artifact* build (xtask's ServerStep) overrides it with the r9
+# target spec, `build-std=core,alloc`, and the --image-base / -e link flags.
 default-target = "aarch64-unknown-none"
 
 # A user-space server: a bare-metal `no_std` bin the kernel loads as an ELF.
 # The nameserver — the process the whole file metaphor resolves through.  It
 # owns the bind table (a `name -> channel-pair` map) and serves BIND /
 # RESOLVE / UNBIND over the message syscalls.  It is the first server: its own
-# channel pair is passed to it by its spawner (a page at `port::user::
-# HANDLES_VA`), not created by it — nothing exists yet that a client could ask
-# to find the nameserver, so the spawner hands it the pair directly.
+# channel pair is passed to it by its spawner (a page at the `HANDLES_VA`),
+# not created by it — nothing exists yet that a client could ask to find the
+# nameserver, so the spawner hands it the pair directly.
 #
 # Aarch64-only for the arc, as the console server is: the per-process `Aspace`
 # the loader needs has only landed for aarch64.  Built by `cargo xtask`
 # (ServerStep), not by a bare `cargo build`.
 #
-# No std, no alloc, no dependencies: the server is `core` plus a tiny syscall
-# shim.  It owns its data (the bind table) entirely in its own address space;
-# the kernel stays a message-passing broker.
+# Links `r9x_std`, the curated r9 facade (the syscall core, the runtime entry
+# and the heap), replacing the platform `std`.  It owns its data (the bind
+# table) entirely in its own address space; the kernel stays a message-passing
+# broker.
+
+[dependencies]
+r9x-std = { path = "../../std" }
 
 [lints]
 workspace = true

@@ -31,8 +31,8 @@
 use aarch64::io::{read_reg, write_reg};
 use aarch64::uartpl011::UART0_CR;
 use aarch64::{boot, deviceutil, ipc, mailbox, process, qemu, vm};
-use port::fdt::DeviceTree;
 use port::println;
+use r9x_core::fdt::DeviceTree;
 
 #[macro_use]
 mod common;

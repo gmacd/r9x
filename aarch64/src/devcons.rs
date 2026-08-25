@@ -2,8 +2,8 @@
 
 use crate::uartpl011::Pl011Uart;
 use port::devcons::{Console, IprintOps, Uart};
-use port::fdt::DeviceTree;
 use port::once::Once;
+use r9x_core::fdt::DeviceTree;
 
 #[cfg(target_os = "none")]
 use port::println;

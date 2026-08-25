@@ -19,6 +19,8 @@ qemu-test = []
 aarch64-cpu = "11.2"
 bitstruct = "0.1"
 port = { path = "../port" }
+r9x-abi = { path = "../userland/abi" }
+r9x-core = { path = "../userland/core" }
 num_enum = { version = "0.7", default-features = false }
 
 # Integration tests are whole kernel images: no libtest, and only built

@@ -13,8 +13,11 @@ default-target = "aarch64-unknown-none"
 # Aarch64-only for the arc, as the other servers are.  Built by `cargo
 # xtask` (ServerStep), not by a bare `cargo build`.
 #
-# No std, no alloc, no dependencies: the server is `core` plus a tiny
-# syscall shim.
+# Links `r9x_std`, the curated r9 facade (the syscall core, the runtime entry
+# and the heap), replacing the platform `std`.
+
+[dependencies]
+r9x-std = { path = "../../std" }
 
 [lints]
 workspace = true

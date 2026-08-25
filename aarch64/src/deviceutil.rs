@@ -1,6 +1,6 @@
 use port::Result;
-use port::fdt::DeviceTree;
 use port::mem::{PhysRange, VirtRange};
+use r9x_core::fdt::DeviceTree;
 
 use crate::vm::{PhysPageAllocator, VmTraitImpl};
 use crate::{pagealloc, vm};

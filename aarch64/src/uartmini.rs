@@ -1,7 +1,7 @@
 use port::Result;
 use port::devcons::Uart;
-use port::fdt::DeviceTree;
 use port::mem::VirtRange;
+use r9x_core::fdt::DeviceTree;
 
 use crate::deviceutil::{find_dt_physrange, map_device_register};
 use crate::io::{delay, read_reg, write_or_reg, write_reg};

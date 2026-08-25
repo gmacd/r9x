@@ -22,10 +22,10 @@ use crate::deviceutil::map_device_register;
 use crate::io::{read_reg, write_reg};
 use crate::vm;
 use port::Result;
-use port::fdt::DeviceTree;
 use port::irq::IrqGuard;
 use port::mem::{PhysRange, VirtRange};
 use port::once::Once;
+use r9x_core::fdt::DeviceTree;
 
 use bitstruct::bitstruct;
 

@@ -1,4 +1,4 @@
-use port::fdt::{DeviceTree, Range, RangeMapping, RegBlock, TranslatedReg};
+use r9x_core::fdt::{DeviceTree, Range, RangeMapping, RegBlock, TranslatedReg};
 
 static TEST1_DTB: &[u8] = include_bytes!("../lib/test/fdt/test1.dtb");
 

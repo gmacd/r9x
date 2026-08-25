@@ -4,7 +4,8 @@ use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 
 use crate::uart16550::Uart16550;
-use port::{devcons::Console, fdt::DeviceTree};
+use port::devcons::Console;
+use r9x_core::fdt::DeviceTree;
 
 pub fn init(dt: &DeviceTree) {
     let ns16550a_reg = dt

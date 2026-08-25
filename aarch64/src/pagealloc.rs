@@ -15,7 +15,6 @@ use crate::vm::VaMapping;
 use crate::vm::VirtPage4K;
 use crate::vm::VmTraitImpl;
 use port::bitmapalloc::BitmapPageAlloc;
-use port::fdt::DeviceTree;
 use port::mem::PhysAddr;
 use port::mem::PhysRange;
 use port::pagealloc::PageAllocError;
@@ -23,6 +22,7 @@ use port::{
     mcslock::{Lock, LockNode},
     mem::PAGE_SIZE_4K,
 };
+use r9x_core::fdt::DeviceTree;
 
 #[cfg(target_os = "none")]
 use port::println;

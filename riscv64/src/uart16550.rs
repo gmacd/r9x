@@ -3,7 +3,7 @@ use core::fmt::Error;
 use core::fmt::Write;
 
 use port::devcons::Uart;
-use port::fdt::RegBlock;
+use r9x_core::fdt::RegBlock;
 
 pub struct Uart16550 {
     pub ns16550a_reg: RegBlock,
