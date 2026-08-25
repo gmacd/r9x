@@ -1331,7 +1331,7 @@ impl IntegrationTestStep {
 
     fn run(self) -> Result<()> {
         let mut ran = 0;
-        let mut failed = Vec::new();
+        let failed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         let mut undeclared = Vec::new();
         for &arch in &self.arches {
             let tests = Self::test_names(arch)?;
@@ -1365,41 +1365,60 @@ impl IntegrationTestStep {
                 timeout: self.timeout,
                 verbose: self.verbose,
             };
+
+            // Phase 1: compile all test images (serial — cargo's build lock
+            // serializes them regardless).
+            let mut images: Vec<(String, PathBuf)> = Vec::new();
             for name in &tests {
-                if self.verbose {
-                    println!("\n--- {arch} {name} ---");
-                }
                 ran += 1;
-                // An image that will not compile is that image failing, the
-                // same as a non-zero exit or a timeout.  Aborting here would
-                // hide every later image.
                 let elf = match runner.compile(name) {
                     Ok(elf) => elf,
                     Err(err) => {
                         println!("{arch} {name}: FAILED ({err})");
-                        failed.push(format!("{arch} {name}"));
+                        failed.lock().unwrap().push(format!("{arch} {name}"));
                         continue;
                     }
                 };
-                // Laying the image out and starting qemu, by contrast, use
-                // host tools that say nothing about this image and will say
-                // the same for every one of them.
                 let image = runner.image(name, &elf)?;
-                match runner.qemu(&image)? {
-                    Some(code) if code == arch.passing_status() => {
-                        if self.verbose {
-                            println!("{arch} {name}: ok")
-                        }
+                images.push((name.clone(), image));
+            }
+
+            // Phase 2: run QEMU instances in parallel.  Each instance is an
+            // isolated process with its own serial pipe; the only shared
+            // resource is CPU, so bound concurrency to the core count.
+            let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(4);
+            let runner = &runner;
+            let failed = &failed;
+            for chunk in images.chunks(n) {
+                std::thread::scope(|s| {
+                    for (name, image) in chunk {
+                        s.spawn(move || {
+                            let result = runner.qemu(image);
+                            match result {
+                                Ok(Some(code)) if code == arch.passing_status() => {
+                                    if self.verbose {
+                                        println!("{arch} {name}: ok")
+                                    }
+                                }
+                                Ok(Some(code)) => {
+                                    println!("{arch} {name}: FAILED (exit {code})");
+                                    failed.lock().unwrap().push(format!("{arch} {name}"));
+                                }
+                                Ok(None) => {
+                                    println!(
+                                        "{arch} {name}: TIMED OUT after {}s",
+                                        self.timeout.as_secs()
+                                    );
+                                    failed.lock().unwrap().push(format!("{arch} {name}"));
+                                }
+                                Err(e) => {
+                                    println!("{arch} {name}: FAILED ({e})");
+                                    failed.lock().unwrap().push(format!("{arch} {name}"));
+                                }
+                            }
+                        });
                     }
-                    Some(code) => {
-                        println!("{arch} {name}: FAILED (exit {code})");
-                        failed.push(format!("{arch} {name}"));
-                    }
-                    None => {
-                        println!("{arch} {name}: TIMED OUT after {}s", self.timeout.as_secs());
-                        failed.push(format!("{arch} {name}"));
-                    }
-                }
+                });
             }
         }
 
@@ -1407,6 +1426,7 @@ impl IntegrationTestStep {
         // the documented way to run one, and two of the three have no
         // images, so reporting the fact is the whole answer -- the loop
         // above has already said so per arch.
+        let failed = failed.into_inner().unwrap();
         if ran > 0 {
             println!("\n{} of {ran} passed", ran - failed.len());
         }
