@@ -27,6 +27,9 @@ pub mod builtin;
 /// r9 that needs a per-architecture shim.
 pub mod ipc;
 pub mod mem;
+/// The debug print facility: `println!` to the kernel's PL011 via
+/// `SYS_PRINT`. A debug/boot facility, not a production I/O path.
+pub mod print;
 pub mod process;
 /// The runtime glue a r9 executable needs that the platform `std` would
 /// otherwise provide: the entry point, the panic handler, and the runtime

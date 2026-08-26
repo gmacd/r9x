@@ -174,6 +174,15 @@ pub const SETPRIO_BAD_ID: u64 = 1;
 /// The `SYS_SETPRIO` bad-priority error (the idle sentinel).
 pub const SETPRIO_BAD_PRIO: u64 = 2;
 
+/// Print a string to the kernel debug console (PL011): x0 = user VA of the
+/// string buffer, x1 = length in bytes (capped at 256).  Returns x0 = 0.
+///
+/// A debug/boot facility: the production I/O path is IPC to the console
+/// server (`/dev/cons`).  Not thread-safe: bytes within a single call are
+/// contiguous, but calls from different processes may interleave (the same
+/// guarantee as the kernel's `iprintln!`).
+pub const SYS_PRINT: u64 = 31;
+
 // `SYS_SPAWN` result codes.  A value below `SPAWN_ERR_MIN` is a process id
 // (a table index, 0..NPROCS, and NPROCS is far below the bound); at or above
 // it is one of these errors.  The spawner maps them back to its own errors.

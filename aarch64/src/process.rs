@@ -57,8 +57,8 @@ use port::{iprintln, mem};
 pub use r9x_abi::{
     SETPRIO_BAD_ID, SETPRIO_BAD_PRIO, SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN,
     SPAWN_MAX_HANDLES, SPAWN_NO_SLOT, SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC,
-    SYS_ALLOC_PAGE, SYS_CLOCK, SYS_FREE, SYS_KILL, SYS_RECEIVE_AT, SYS_SETPRIO, SYS_SPAWN,
-    SYS_WAIT, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD, WAIT_BAD_ID, WAIT_TIMEOUT,
+    SYS_ALLOC_PAGE, SYS_CLOCK, SYS_FREE, SYS_KILL, SYS_PRINT, SYS_RECEIVE_AT, SYS_SETPRIO,
+    SYS_SPAWN, SYS_WAIT, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD, WAIT_BAD_ID, WAIT_TIMEOUT,
 };
 
 /// The exit status a faulted process is marked with: distinct from a clean
@@ -567,12 +567,7 @@ impl Handles {
     /// A server's handles: own pair is zero (created at runtime via
     /// `SYCCREATECHAN`), nameserver's pair in the extra fields.
     pub fn for_server(ns: &Handles) -> Self {
-        Self {
-            inbound: 0,
-            outbound: 0,
-            ns_inbound: ns.inbound,
-            ns_outbound: ns.outbound,
-        }
+        Self { inbound: 0, outbound: 0, ns_inbound: ns.inbound, ns_outbound: ns.outbound }
     }
 }
 

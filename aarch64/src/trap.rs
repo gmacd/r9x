@@ -412,6 +412,13 @@ fn trap(frame: &mut TrapFrame) {
                     crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
+                process::SYS_PRINT => {
+                    let result = ipc::sys_print(frame.x0, frame.x1);
+                    frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
+                    return;
+                }
                 // Exit and an unimplemented number both end the
                 // process, with the svc number as status.
                 _ => process::exit_current(syscall),
@@ -462,6 +469,7 @@ fn svc_returns(syscall: u64) -> bool {
             | process::SYS_WAIT
             | process::SYS_KILL
             | process::SYS_SETPRIO
+            | process::SYS_PRINT
     )
 }
 

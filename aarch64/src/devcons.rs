@@ -35,7 +35,7 @@ static IPRINT_OPS: IprintOps = IprintOps { putb: iputb };
 /// alias the reference held by the console.  Drops the byte if the
 /// console is not up yet — `Once` makes that a check rather than an
 /// assumption.
-fn iputb(b: u8) {
+pub(crate) fn iputb(b: u8) {
     if let Some(uart) = UART.get() {
         uart.putb(b);
     }

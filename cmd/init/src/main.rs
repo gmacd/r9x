@@ -20,6 +20,7 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
+use r9x_std::println;
 use r9x_std::{ipc, process, rt};
 
 /// The entry point: where the loader sets `e_entry`.  Forwards to `r9x_std`'s
@@ -37,6 +38,7 @@ const CHILD_INDEX: u64 = 0;
 /// The process body: read the spawner's pair, bring up the child by index,
 /// drive the two error cases, check the child's round-trip, and block — alive.
 fn main() {
+    println!("init: up");
     // The image's pair, read from the `HANDLES_VA` page the kernel wrote
     // (the generalized header's first two handles).  The count — not the first
     // handle — is the check: channel 0 is a valid handle (the table is indexed

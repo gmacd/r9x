@@ -48,6 +48,7 @@ fn name(number: u64) -> &'static str {
         28 => "SYS_WAIT",
         29 => "SYS_KILL",
         30 => "SYS_SETPRIO",
+        31 => "SYS_PRINT",
         _ => "?",
     }
 }

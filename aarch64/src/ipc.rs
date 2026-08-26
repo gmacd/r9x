@@ -598,6 +598,37 @@ pub(crate) fn sys_createchan() -> u64 {
     0
 }
 
+/// `SYS_PRINT`: read a string from user space and write it to the kernel
+/// debug console (PL011) via `iputb`.  Capped at 256 bytes.  A debug/boot
+/// facility — the production I/O path is IPC to the console server.
+/// Returns 0.
+#[cfg(target_os = "none")]
+pub(crate) fn sys_print(va: u64, len: u64) -> u64 {
+    const MAX: usize = 256;
+    let n = len as usize;
+    let buf = &mut [0u8; MAX];
+    if n > 0 {
+        let n = n.min(MAX);
+        // SAFETY: `va` is a user VA, mapped read-only and reachable in EL1
+        // this arc (the calling process's TTBR0 is still installed);
+        // `buf` is a kernel buffer of at least `n` bytes; the regions are
+        // disjoint (user vs kernel VA).
+        unsafe { copy_from_user(&mut buf[..n], va as *const u8, n) };
+        for b in &buf[..n] {
+            crate::devcons::iputb(*b);
+        }
+    }
+    OK
+}
+
+/// `SYS_PRINT` for the host build: a no-op (the kernel's PL011 is not
+/// reachable from the host).
+#[cfg(not(target_os = "none"))]
+pub(crate) fn sys_print(va: u64, len: u64) -> u64 {
+    let _ = (va, len);
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
