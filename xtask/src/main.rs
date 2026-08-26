@@ -635,6 +635,48 @@ impl QemuStep {
         }
     }
 
+    /// Build the aarch64 kernel with the systrace feature, returning the
+    /// ELF path for QEMU to load directly.
+    fn build_kernel_systrace(&self) -> Result<Option<PathBuf>> {
+        // Build the console server first (the kernel image embeds it).
+        ServerStep::new(self.arch, self.profile, self.verbose).run()?;
+        let mut cmd = Command::new(cargo());
+        cmd.arg("build");
+        apply_to_build_step(
+            &mut cmd,
+            &self.config,
+            &self.arch.target(),
+            &self.profile,
+            workspace().to_str().unwrap(),
+        )?;
+        cmd.current_dir(workspace());
+        cmd.arg("--package").arg("aarch64");
+        cmd.arg("--features").arg("systrace");
+        if self.profile == Profile::Release {
+            cmd.arg("--release");
+        }
+        cmd.arg("-Z").arg("build-std=core,alloc");
+        cmd.arg("-Z").arg("json-target-spec");
+        cmd.arg("--message-format=json-render-diagnostics");
+        if self.verbose {
+            println!("Executing {cmd:?}");
+        }
+        let elf = built_binary(&mut cmd, "aarch64")?;
+        // Convert the ELF to a raw binary (QEMU's -kernel for aarch64
+        // expects a raw image, not an ELF with a kernel-half entry point).
+        let out_dir = elf.parent().unwrap();
+        let raw = out_dir.join("aarch64-systrace");
+        let mut oc = Command::new(objcopy());
+        oc.arg("-O").arg("binary").arg(&elf).arg(&raw);
+        if self.verbose {
+            println!("Executing {oc:?}");
+        }
+        if !annotated_status(&mut oc)?.success() {
+            return Err("objcopy failed for systrace image".into());
+        }
+        Ok(Some(raw))
+    }
+
     fn run(self) -> Result<()> {
         let out = target_dir().join(self.arch.target()).join(self.profile.dir());
         let qemu_system = self.arch.qemu_system();
@@ -646,8 +688,15 @@ impl QemuStep {
         // A named image is one of this arch's QEMU test images: built
         // the way the integration tests build them, so `xtask qemu`
         // stays the single bounded way to watch a guest.
-        let image_path = if self.image.is_empty() {
-            None
+        let (image_path, is_test_image) = if self.image.is_empty() {
+            // The full kernel image. When --systrace is set, build with
+            // the feature so the trace is active.  The kernel ELF is used
+            // directly (not gzipped); no test-image flags are added.
+            if self.systrace && self.arch == Arch::Aarch64 {
+                (self.build_kernel_systrace()?, false)
+            } else {
+                (None, false)
+            }
         } else {
             // A server-embedding image needs the server's ELF built first.
             ServerStep::new(self.arch, self.profile, self.verbose).run()?;
@@ -660,7 +709,7 @@ impl QemuStep {
                 systrace: self.systrace,
             };
             let elf = runner.compile(&self.image)?;
-            Some(runner.image(&self.image, &elf)?)
+            (Some(runner.image(&self.image, &elf)?), true)
         };
 
         match self.arch {
@@ -674,7 +723,7 @@ impl QemuStep {
                 // no display needed).  Omitted for the default kernel image
                 // so QEMU opens a display window (the VideoCore framebuffer
                 // is visible).
-                if image_path.is_some() {
+                if is_test_image || self.systrace {
                     cmd.arg("-nographic");
                 }
 
@@ -691,10 +740,12 @@ impl QemuStep {
                 }
                 match &image_path {
                     Some(image) => {
-                        // Test images leave QEMU via semihosting, and a
-                        // rebooted image would just start again.
-                        cmd.arg("-semihosting");
-                        cmd.arg("-no-reboot");
+                        if is_test_image {
+                            // Test images leave QEMU via semihosting, and a
+                            // rebooted image would just start again.
+                            cmd.arg("-semihosting");
+                            cmd.arg("-no-reboot");
+                        }
                         cmd.arg("-kernel");
                         cmd.arg(image);
                     }
@@ -1861,6 +1912,43 @@ fn built_test_binary(cmd: &mut Command, name: &str) -> Result<PathBuf> {
         return Err(format!("building test {name} failed").into());
     }
     executable.ok_or_else(|| format!("cargo built no test binary for {name}").into())
+}
+
+fn built_binary(cmd: &mut Command, name: &str) -> Result<PathBuf> {
+    cmd.stdout(process::Stdio::piped());
+    let mut child =
+        cmd.spawn().map_err(|e| format!("{}: {e}", cmd.get_program().to_string_lossy()))?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+
+    let mut executable = None;
+    let mut read_error = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(err) => {
+                read_error = Some(err);
+                break;
+            }
+        };
+        if line.contains(r#""reason":"compiler-artifact""#)
+            && line.contains(&format!(r#""name":"{name}""#))
+            && line.contains(r#""kind":["bin"]"#)
+            && let Some(path) = json_string_field(&line, "executable")
+        {
+            executable = Some(PathBuf::from(path));
+        }
+    }
+
+    if let Some(err) = read_error {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("reading cargo's output for {name}: {err}").into());
+    }
+
+    if !child.wait()?.success() {
+        return Err(format!("building {name} failed").into());
+    }
+    executable.ok_or_else(|| format!("cargo built no binary for {name}").into())
 }
 
 /// The value of a `"key":"value"` string field in one of cargo's JSON
