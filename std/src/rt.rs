@@ -83,6 +83,16 @@ pub fn n_handles() -> u32 {
     unsafe { core::ptr::read_volatile(p) }
 }
 
+/// A single spawner-passed handle at `index` (0-based, after the count word).
+/// The `HANDLES_VA` layout is `[n_handles:4 LE][handle:4 LE ...]`, so
+/// `handle[i]` lives at word offset `1 + i`.
+pub fn handle_at(index: u32) -> u32 {
+    let p = HANDLES_VA as *const u32;
+    // SAFETY: the spawner wrote the header to this page before this process's
+    // first instruction; the caller guarantees `index < n_handles`.
+    unsafe { core::ptr::read_volatile(p.add(1 + index as usize)) }
+}
+
 /// The panic handler: r9's panic strategy is to end the process.  A server
 /// that panics is a bug, but the process must not spin the machine or corrupt
 /// other processes — it exits and the kernel reclaims it.

@@ -38,7 +38,7 @@ use port::ipc::Channel;
 /// The number of channels: a fixed table (no allocation).  A channel handle
 /// is an index into it.
 #[cfg(any(target_os = "none", test))]
-const NCHANNELS: usize = 6;
+const NCHANNELS: usize = 16;
 
 /// The channel table.  `Channel` is `!Copy` (it holds a lock), so the array
 /// is spelled out rather than repeated.  A channel is not reclaimed this arc:
@@ -455,38 +455,19 @@ pub(crate) fn sys_receive_at(
     }
 }
 
-/// SYSFB_CONFIGURE: configure the VideoCore framebuffer and map it into the
-/// calling process's page table at `FB_VA`.  Returns 0 on success, 1 if
-/// already configured.
+/// SYSALLOC_PAGE: allocate a page in the current process's heap and return
+/// both the virtual and physical address.  Returns (va, pa) on success, (1, 0)
+/// on failure.
 #[cfg(not(target_os = "none"))]
-pub(crate) fn sys_fb_configure() -> u64 {
-    1
+pub(crate) fn sys_alloc_page() -> (u64, u64) {
+    (0, 0)
 }
 #[cfg(target_os = "none")]
-pub(crate) fn sys_fb_configure() -> u64 {
-    // Already configured: refuse (the ALLOCATE tag would leak the old buffer).
-    if crate::mailbox::fb_range().is_some() {
-        return 1;
+pub(crate) fn sys_alloc_page() -> (u64, u64) {
+    match process::heap_alloc_page() {
+        Some((va, pa)) => (va as u64, pa),
+        None => (1, 0),
     }
-    // Configure the framebuffer via the Mailbox.
-    let fb = crate::mailbox::configure_framebuffer(
-        r9x_abi::FB_WIDTH as u32,
-        r9x_abi::FB_HEIGHT as u32,
-        32,
-    );
-    // Map it into the calling process's page table.
-    let Some(aspace) = process::current_aspace() else {
-        return 1;
-    };
-    if aspace.map_mmio(&fb, r9x_abi::FB_VA).is_err() {
-        return 1;
-    }
-    // Invalidate the user TLB (the process may hold a stale entry or a
-    // translation fault for `FB_VA` from before the mapping).
-    unsafe {
-        core::arch::asm!("tlbi vmalle1is", "dsb ish", "isb", options(nomem, nostack),);
-    }
-    0
 }
 
 /// SYCSEND: `handle` on channel, `buf`/`len` the payload, `opcode`/`tag` the

@@ -127,7 +127,12 @@ pub extern "C" fn main9(dtb_va: usize) {
     // see each other's handles by constant.
     let ns_in = ipc::create();
     let ns_out = ipc::create();
-    let ns_handles = process::Handles { inbound: ns_in as u32, outbound: ns_out as u32 };
+    let ns_handles = process::Handles {
+        inbound: ns_in as u32,
+        outbound: ns_out as u32,
+        extra_inbound: 0,
+        extra_outbound: 0,
+    };
     let ns =
         process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
     // The console server is handed the nameserver's pair, not its own: it

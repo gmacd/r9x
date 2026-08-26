@@ -62,7 +62,12 @@ pub extern "C" fn main9(dtb_va: usize) {
     // constant.
     let in_h = ipc::create();
     let out_h = ipc::create();
-    let handles = process::Handles { inbound: in_h as u32, outbound: out_h as u32 };
+    let handles = process::Handles {
+        inbound: in_h as u32,
+        outbound: out_h as u32,
+        extra_inbound: 0,
+        extra_outbound: 0,
+    };
 
     // Register the image registry before any spawn can reference an index: the
     // load-bearing ordering (a spawn by an unregistered index is the error, not

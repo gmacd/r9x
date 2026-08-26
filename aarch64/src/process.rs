@@ -56,7 +56,7 @@ use port::{iprintln, mem};
 // laid out.
 pub use r9x_abi::{
     SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_MAX_HANDLES, SPAWN_NO_SLOT,
-    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_CLOCK, SYS_FB_CONFIGURE, SYS_FREE,
+    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_ALLOC_PAGE, SYS_CLOCK, SYS_FREE,
     SYS_RECEIVE_AT, SYS_SPAWN, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
 };
 
@@ -554,6 +554,10 @@ pub struct Handles {
     pub inbound: u32,
     /// The outbound channel: clients receive replies here.
     pub outbound: u32,
+    /// A second pair (for servers that need to talk to two other servers).
+    /// Zero when not used.
+    pub extra_inbound: u32,
+    pub extra_outbound: u32,
 }
 
 /// Start a process from an image, mapping its pages into a fresh per-process
@@ -774,13 +778,22 @@ fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
             .aspace
             .map_user_page(Entry::rw_user_data(), port::user::HANDLES_VA)
             .unwrap_or_else(|err| panic!("elf: handles page: {err:?}"));
-        let mut header = [0u8; 12];
-        header[0..4].copy_from_slice(&2u32.to_le_bytes());
+        // The generalized header: `[n_handles:4][handle:4 ...]`.  A server's
+        // state is one or two pairs: the nameserver's (always) and, for the
+        // display server, the mailbox server's.
+        let n = if h.extra_inbound != 0 || h.extra_outbound != 0 { 4 } else { 2 };
+        let mut header = [0u8; 20];
+        header[0..4].copy_from_slice(&(n as u32).to_le_bytes());
         header[4..8].copy_from_slice(&h.inbound.to_le_bytes());
         header[8..12].copy_from_slice(&h.outbound.to_le_bytes());
+        if n == 4 {
+            header[12..16].copy_from_slice(&h.extra_inbound.to_le_bytes());
+            header[16..20].copy_from_slice(&h.extra_outbound.to_le_bytes());
+        }
+        let len = n as usize * 4 + 4;
         // SAFETY: kptr is a freshly mapped, zeroed page, valid and
-        // kernel-writable, and 12 bytes fit.
-        unsafe { core::ptr::copy_nonoverlapping(header.as_ptr(), kptr, 12) };
+        // kernel-writable, and `len` bytes fit.
+        unsafe { core::ptr::copy_nonoverlapping(header.as_ptr(), kptr, len) };
     }
     install(loaded.aspace, loaded.entry, loaded.user_sp, loaded.heap_base)
 }
@@ -1129,18 +1142,21 @@ pub(crate) fn exit_current(status: u64) -> ! {
     }
 
     let node = LockNode::new();
-    {
+    let exited_id = {
         let mut table = TABLE.lock(&node);
-        let Some(slot) =
-            table.iter_mut().find(|slot| matches!(slot, Some(p) if p.state == State::Running))
+        let Some((idx, slot)) = table
+            .iter_mut()
+            .enumerate()
+            .find(|(_, slot)| matches!(slot, Some(p) if p.state == State::Running))
         else {
             panic!("exit_current: no Running process in the table");
         };
         let p = slot.as_mut().unwrap();
         p.exit_status = status;
         p.state = State::Exited;
-    }
-    iprintln!("process exited, status {status}");
+        idx as u32
+    };
+    iprintln!("process {exited_id} exited, status {status}");
 
     if !resched() {
         // No next Runnable: the last process.  Unwind run_all: switch
@@ -1541,6 +1557,30 @@ pub(crate) fn heap_grow(count: u64) -> Option<usize> {
     p.heap_brk = new_brk;
     p.heap_hwm = new_brk;
     Some(old_brk)
+}
+
+/// Allocate a single page in the current process's heap and return both the
+/// virtual and physical address.  The physical address is needed by a server
+/// that talks to a device which DMA-reads or writes a buffer (the Mailbox).
+#[cfg(target_os = "none")]
+pub(crate) fn heap_alloc_page() -> Option<(usize, u64)> {
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    let current = unsafe { tpidr_current() };
+    if current.is_null() {
+        return None;
+    }
+    let id = table.iter().position(|slot| {
+        matches!(slot, Some(p) if (p as *const Process as *const ()) == (current as *const Process as *const ()))
+    })?;
+    let p = table.get_mut(id).and_then(|slot| slot.as_mut())?;
+    let old_brk = p.heap_brk;
+    let new_brk = brk_grow(old_brk, port::mem::PAGE_SIZE_4K, crate::param::KZERO)?;
+    let page = p.heap_hwm;
+    let pa = p.aspace.map_user_data_page_pa(page).ok()?;
+    p.heap_brk = new_brk;
+    p.heap_hwm = new_brk;
+    Some((old_brk, pa.addr()))
 }
 
 /// Lower the current process's heap to `va` (`brk`-style free-the-top): the

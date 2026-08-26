@@ -183,10 +183,13 @@ impl Aspace {
     /// heap bytes would become kernel-reachable.  Returns `()` (the kernel has
     /// no pointer to hand back); the process reaches the page at `va`.
     pub fn map_user_data_page(&self, va: usize) -> Result<(), PageAllocError> {
-        // A fresh physical page, mapped into the process's TTBR0 only (the
-        // single mapping, `rw_user_data`).  No TTBR1 identity map: that is what
-        // distinguishes a heap page from the text/data a server is loaded with
-        // (which the kernel writes, and so must also be reachable from TTBR1).
+        self.map_user_data_page_pa(va).map(|_| ())
+    }
+
+    /// Like [`map_user_data_page`], but also returns the physical address of
+    /// the allocated page.  Needed by a server that talks to a device which
+    /// DMA-reads or writes a buffer (the Mailbox takes a physical address).
+    pub fn map_user_data_page_pa(&self, va: usize) -> Result<PhysAddr, PageAllocError> {
         let page_pa = pagealloc::allocate_physpage()?;
         let range = PhysRange::with_pa_len(page_pa, PAGE_SIZE_4K);
         let mut physpage_allocator = PhysPageAllocator {};
@@ -203,7 +206,7 @@ impl Aspace {
                 RootPageTableType::User,
             )
             .map_err(|_| PageAllocError::UnableToMap)?;
-        Ok(())
+        Ok(page_pa)
     }
 
     /// Map a device's MMIO range into this AS at `va` (the process sees the

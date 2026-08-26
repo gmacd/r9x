@@ -36,33 +36,6 @@ fn print_memory_info() {
     println!("  Total:\t{total:#016x}");
 }
 
-// https://github.com/raspberrypi/documentation/blob/develop/documentation/asciidoc/computers/raspberry-pi/revision-codes.adoc
-fn print_pi_name(board_revision: u32) {
-    let name = match board_revision {
-        0xa21041 => "Raspberry Pi 2B",
-        0xa02082 => "Raspberry Pi 3B",
-        0xb03115 => "Raspberry Pi 4B",
-        0xa220a0 => "Raspberry Compute Module 3",
-        _ => "Unrecognised",
-    };
-    println!("  Board Name:\t{name}");
-}
-
-fn print_board_info() {
-    println!("Board information:");
-    let board_revision = mailbox::get_board_revision();
-    print_pi_name(board_revision);
-    println!("  Board Rev:\t{board_revision:#010x}");
-    let model = mailbox::get_board_model();
-    println!("  Board Model:\t{model:#010x}");
-    let serial = mailbox::get_board_serial();
-    println!("  Serial Num:\t{serial:#010x}");
-    let mailbox::MacAddress { a, b, c, d, e, f } = mailbox::get_board_macaddr();
-    println!("  MAC Address:\t{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}");
-    let fw_revision = mailbox::get_firmware_revision();
-    println!("  Firmware Rev:\t{fw_revision:#010x}");
-}
-
 fn print_stacks() {
     unsafe extern "C" {
         static interruptstackbase: [u64; 0];
@@ -88,9 +61,6 @@ pub extern "C" fn main9(dtb_va: usize) {
         panic!("couldn't init page allocator: {err:?}");
     }
 
-    // The mailbox is a separate device, up before the console: the PL011
-    // console needs it for its clock, and the board info printed below reads
-    // it too.
     mailbox::init(&dt);
     boot::console(&dt);
 
@@ -111,7 +81,6 @@ pub extern "C" fn main9(dtb_va: usize) {
     println!("r9 from the Internet");
     print_stacks();
     print_binary_sections();
-    print_board_info();
     print_memory_info();
 
     println!("Set up a user process");
@@ -131,13 +100,12 @@ pub extern "C" fn main9(dtb_va: usize) {
     // `system` integration test (both call `system::bringup`).
     println!("starting system");
 
-    let ns_handles = system::bringup();
+    let (ns_handles, mbox_handles) = system::bringup();
 
-    // Spawn the display server.  It configures the framebuffer itself (via
-    // `SYS_FB_CONFIGURE`) and writes the color bar to the kernel-mapped
-    // region at `FB_VA`.  It runs forever (the frame loop), so it is not in
-    // `bringup()` — `run_all` in the `system` image would never return.
-    system::spawn_display(ns_handles);
+    // Spawn the display server.  It configures the framebuffer via IPC to
+    // the mailbox server, maps it via `SYS_MAP_MMIO`, and writes the color
+    // bar.  It runs forever (the frame loop), so it is not in `bringup()`.
+    system::spawn_display(ns_handles, mbox_handles);
 
     // The console server is up (spawned; its BIND is processed during the
     // first run_all).  Gate off the kernel's normal output: from here on,

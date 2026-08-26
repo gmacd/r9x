@@ -89,7 +89,12 @@ pub extern "C" fn main9(dtb_va: usize) {
     // `BIND`s to).
     let ns_in = ipc::create();
     let ns_out = ipc::create();
-    let ns_handles = process::Handles { inbound: ns_in as u32, outbound: ns_out as u32 };
+    let ns_handles = process::Handles {
+        inbound: ns_in as u32,
+        outbound: ns_out as u32,
+        extra_inbound: 0,
+        extra_outbound: 0,
+    };
 
     let ns =
         process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });

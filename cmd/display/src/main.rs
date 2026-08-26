@@ -1,37 +1,22 @@
 //! The display server: the first user-space process that owns a frame buffer
 //! and paces its frame loop.
 //!
-//! It is the Amiga's demoscene routine in user-space: prepare the frame, wait
-//! for the vertical blank (a timer deadline on QEMU — there is no vblank
-//! interrupt), update the display, repeat.
-//!
 //! Double buffering: the server writes to a back buffer in its own heap
 //! (cached Normal memory), then copies it to the front buffer (the VideoCore's
-//! framebuffer in VC RAM, mapped by the kernel at `FB_VA` with Device memory
-//! attributes).  The copy is ~70 µs at the Pi 4's memory bandwidth — far
-//! less than one frame period (16 ms), so the tearing window is negligible.
+//! framebuffer in VC RAM, mapped by the server via `SYS_MAP_MMIO` with Device
+//! memory attributes).  The copy is ~70 µs at the Pi 4's memory bandwidth —
+//! far less than one frame period (16 ms), so the tearing window is
+//! negligible.
 //!
-//! The frame loop:
-//! 1. Write a moving color bar to the back buffer (driven by the frame
-//!    number: the bar's position is `frame_number % width`).
-//! 2. Copy the back buffer to the front buffer (the framebuffer).
-//! 3. Block on the pacing channel with a timer deadline (`SYS_RECEIVE_AT`):
-//!    no spin, the process is off the ready set during the wait.
-//! 4. Advance the frame number.
+//! The server configures the framebuffer via IPC to the mailbox server:
+//! sends a configure request, receives the physical address and size, then
+//! maps the framebuffer via `SYS_MAP_MMIO`.
 //!
-//! The color bar is a vertical bar that moves left-to-right across the frame.
-//! The rest of the frame is black.  The pattern proves the frame loop is
-//! running (the frame number advances, the bar moves).
+//! The frame loop: write a moving color bar to the back buffer, copy it to
+//! the front buffer, block on the pacing channel's deadline, repeat.
 //!
-//! The server configures the framebuffer itself (via `SYS_FB_CONFIGURE`):
-//! the kernel sends the Mailbox `SET_*` + `ALLOCATE` sequence and maps the
-//! result into the server's page table.  The server then writes to `FB_VA`.
-//!
-//! It publishes its name in the nameserver (`/dev/display`), like the console
-//! server publishes `/dev/console`.  The nameserver must be up before the
-//! BIND is processed.
-//!
-//! The frame loop is infinite — the display server never exits.
+//! It publishes its name in the nameserver (`/dev/display`).  The frame loop
+//! is infinite — the display server never exits.
 
 #![no_std]
 #![no_main]
@@ -41,8 +26,9 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 use r9x_abi::{FB_HEIGHT, FB_SIZE, FB_VA, FB_WIDTH};
-use r9x_std::fb;
 use r9x_std::ipc;
+use r9x_std::mem;
+use r9x_std::process::exit;
 use r9x_std::rt;
 use r9x_std::time;
 
@@ -52,9 +38,12 @@ const HEIGHT: usize = FB_HEIGHT;
 /// The color bar's width, in pixels.
 const BAR_WIDTH: usize = 32;
 
-/// The nameserver protocol (mirrors the console server).
+/// The nameserver protocol.
 const OP_BIND: u16 = 0;
 const R_OK: u16 = 0;
+
+/// The mailbox server's IPC protocol.
+const OP_CONFIGURE_FB: u16 = 0;
 
 /// The name the server publishes under.
 const NAME: &[u8] = b"/dev/display";
@@ -66,9 +55,7 @@ pub extern "C" fn start(dtb_va: usize) -> ! {
     rt::run(dtb_va, main)
 }
 
-/// Write a moving color bar to the back buffer.  The bar is a vertical
-/// stripe at `x = frame_number % WIDTH`, `BAR_WIDTH` pixels wide, bright
-/// green (RGB 0, 255, 0, fully opaque).  The rest of the frame is black.
+/// Write a moving color bar to the back buffer.
 fn write_frame(back: &mut [u8], frame_number: u64) {
     let bar_x = (frame_number as usize) % WIDTH;
     back.fill(0);
@@ -89,63 +76,71 @@ fn write_frame(back: &mut [u8], frame_number: u64) {
 }
 
 /// Copy the back buffer to the front buffer (the VideoCore's framebuffer).
-/// The front buffer is mapped with Device memory attributes (uncached), so
-/// each byte is a memory access.  At the Pi 4's bandwidth (~17 GB/s) this
-/// takes ~70 µs for 1.2 MB — far less than one frame period.
 fn flip(back: &[u8]) {
     let front = FB_VA as *mut u8;
-    // SAFETY: the kernel mapped the framebuffer at FB_VA (FB_SIZE bytes,
-    // Device memory, writable).  `back` is a valid slice of the same size.
+    // SAFETY: the framebuffer is mapped at FB_VA (FB_SIZE bytes, Device
+    // memory, writable).  `back` is a valid slice of the same size.
     unsafe {
         core::ptr::copy_nonoverlapping(back.as_ptr(), front, FB_SIZE);
     };
 }
 
-/// The server body: configure the framebuffer, allocate the back buffer,
-/// publish the name, and run the frame loop forever.
+/// The server body: configure the framebuffer via IPC to the mailbox server,
+/// allocate the back buffer, publish the name, and run the frame loop forever.
 fn main() {
-    // Configure the framebuffer: the kernel sends the Mailbox SET_* + ALLOCATE
-    // sequence and maps the result into this process's page table at FB_VA.
-    let result = fb::configure();
-    // A failure means the framebuffer is already configured (should not happen
-    // in this arc) or the Mailbox request failed.  Either way, the frame loop
-    // would fault on the first write to FB_VA, so exit now.
-    if result != 0 {
-        // The process exits with the svc number (0 = SYSEXIT).  The kernel
-        // records the fault status.
-        r9x_std::process::exit(1);
+    // Read the nameserver's and mailbox server's channel pairs.
+    let (ns_in, ns_out) = rt::handles();
+    let mbox_in = rt::handle_at(2);
+    let mbox_out = rt::handle_at(3);
+
+    // Configure the framebuffer via IPC to the mailbox server.
+    let mut req = [0u8; 14];
+    req[0..2].copy_from_slice(&OP_CONFIGURE_FB.to_le_bytes());
+    req[2..6].copy_from_slice(&(WIDTH as u32).to_le_bytes());
+    req[6..10].copy_from_slice(&(HEIGHT as u32).to_le_bytes());
+    req[10..14].copy_from_slice(&32u32.to_le_bytes());
+    let _ = ipc::send(mbox_in as u64, R_OK, 0, &req);
+
+    // Receive the reply: [status:1][phys_lo:4][phys_hi:4][size_lo:4][size_hi:4]
+    let mut reply = [0u8; 24];
+    let (_, _, _) = ipc::receive(mbox_out as u64, &mut reply);
+    if reply[0] != 0 {
+        exit(1);
     }
+    let phys_lo = u32::from_le_bytes([reply[1], reply[2], reply[3], reply[4]]);
+    let phys_hi = u32::from_le_bytes([reply[5], reply[6], reply[7], reply[8]]);
+    let phys = (phys_hi as u64) << 32 | phys_lo as u64;
+
+    // Map the framebuffer into this process's page table at FB_VA.
+    let _ = mem::map_mmio(phys, FB_VA as u64);
 
     // Allocate the back buffer in this process's heap (cached Normal memory).
     let mut back: Vec<u8> = vec![0u8; FB_SIZE];
 
-    // Write and flip the first frame (frame_number = 0: the bar is at x = 0).
+    // Write and flip the first frame.
     write_frame(&mut back, 0);
     flip(&back);
 
     // Create the pacing channel.
     let pacing_chan = ipc::create_chan();
 
-    // Publish the name in the nameserver (like the console server).
-    let (ns_in, ns_out) = rt::handles();
+    // Publish the name in the nameserver.
     let (in_h, out_h) = ipc::create_pair();
-    let mut req = [0u8; NAME.len() + 8];
+    let mut bind_req = [0u8; NAME.len() + 8];
     {
         let n = NAME.len();
-        // SAFETY: `req[..n]` and `NAME` are the same length and do not
-        // overlap; the 4-byte LE halves are disjoint from each other and from
-        // the name.
+        // SAFETY: `bind_req[..n]` and `NAME` are the same length.
         unsafe {
-            core::ptr::copy_nonoverlapping(NAME.as_ptr(), req.as_mut_ptr(), n);
+            core::ptr::copy_nonoverlapping(NAME.as_ptr(), bind_req.as_mut_ptr(), n);
             let ib = in_h.to_le_bytes();
-            core::ptr::copy_nonoverlapping(ib.as_ptr(), req.as_mut_ptr().add(n), 4);
+            core::ptr::copy_nonoverlapping(ib.as_ptr(), bind_req.as_mut_ptr().add(n), 4);
             let ob = out_h.to_le_bytes();
-            core::ptr::copy_nonoverlapping(ob.as_ptr(), req.as_mut_ptr().add(n + 4), 4);
+            core::ptr::copy_nonoverlapping(ob.as_ptr(), bind_req.as_mut_ptr().add(n + 4), 4);
         };
     }
-    let _ = ipc::send(ns_in as u64, OP_BIND, 0, &req);
-    let mut reply = [0u8; 8];
-    let (op, _, _) = ipc::receive(ns_out as u64, &mut reply);
+    let _ = ipc::send(ns_in as u64, OP_BIND, 0, &bind_req);
+    let mut bind_reply = [0u8; 8];
+    let (op, _, _) = ipc::receive(ns_out as u64, &mut bind_reply);
     let _ = op == R_OK;
 
     // The frame loop: prepare the frame, flip, wait for the deadline, repeat.

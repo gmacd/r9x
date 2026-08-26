@@ -29,6 +29,8 @@ mod common;
 static DISPLAY_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/display.elf"));
 /// The built nameserver's ELF, embedded (same as the `system` image).
 static NAMESERVER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nameserver.elf"));
+/// The built mailbox server's ELF, embedded.
+static MAILBOX_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mailbox.elf"));
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main9(dtb_va: usize) {
@@ -53,14 +55,36 @@ pub extern "C" fn main9(dtb_va: usize) {
     // server's BIND send wakes it (the IPC fast path).
     let ns_in = ipc::create();
     let ns_out = ipc::create();
-    let ns_handles = process::Handles { inbound: ns_in as u32, outbound: ns_out as u32 };
+    let ns_handles = process::Handles {
+        inbound: ns_in as u32,
+        outbound: ns_out as u32,
+        extra_inbound: 0,
+        extra_outbound: 0,
+    };
     process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
 
-    // The display server: handed the nameserver's handles (it publishes
-    // `/dev/display`).  The display server's frame loop is infinite — it
-    // blocks on the pacing channel's deadline between frames, so the
-    // scheduler can run the other processes.
-    process::spawn(&process::Image::Elf { bytes: DISPLAY_ELF, handles: Some(ns_handles) });
+    // The mailbox server: owns the Mailbox property interface.  The display
+    // server sends it a framebuffer config request during init.
+    let mbox_in = ipc::create();
+    let mbox_out = ipc::create();
+    process::spawn(&process::Image::Elf {
+        bytes: MAILBOX_ELF,
+        handles: Some(process::Handles {
+            inbound: mbox_in as u32,
+            outbound: mbox_out as u32,
+            extra_inbound: 0,
+            extra_outbound: 0,
+        }),
+    });
+
+    // The display server: handed the nameserver's and mailbox's handles.
+    let display_handles = process::Handles {
+        inbound: ns_in as u32,
+        outbound: ns_out as u32,
+        extra_inbound: mbox_in as u32,
+        extra_outbound: mbox_out as u32,
+    };
+    process::spawn(&process::Image::Elf { bytes: DISPLAY_ELF, handles: Some(display_handles) });
 
     process::run_all();
 

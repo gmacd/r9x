@@ -1,0 +1,15 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "mailbox"
+version = "0.1.0"
+edition = "2024"
+default-target = "aarch64-unknown-none"
+
+[dependencies]
+r9x-std = { path = "../../std" }
+r9x-abi = { path = "../../abi" }
+r9x-core = { path = "../../core" }
+
+[lints]
+workspace = true

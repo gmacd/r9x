@@ -12,7 +12,7 @@
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::cell::Cell;
 use core::ptr;
-use r9x_abi::{PAGE_SIZE, SYS_ALLOC, SYS_FREE, SYSMAPMMIO};
+use r9x_abi::{PAGE_SIZE, SYS_ALLOC, SYS_ALLOC_PAGE, SYS_FREE, SYSMAPMMIO};
 
 use crate::sys::sys;
 
@@ -32,6 +32,19 @@ fn pages_for(size: usize) -> usize {
 /// unmapped page is a fault the kernel's EL0 path handles).
 pub fn map_mmio(phys: u64, va: u64) -> u64 {
     unsafe { sys(SYSMAPMMIO, phys, va, 0, 0, 0).0 }
+}
+
+/// Allocate a page in this process's heap and return both the virtual and
+/// physical address.  The physical address is needed by a server that talks
+/// to a device which DMA-reads or writes a buffer (the BCM283x Mailbox takes
+/// a physical address in its write register).  Returns `None` on failure.
+pub fn alloc_page() -> Option<(usize, u64)> {
+    let (va, pa, _) = unsafe { sys(SYS_ALLOC_PAGE, 0, 0, 0, 0, 0) };
+    let va = va as usize;
+    if va < PAGE_SIZE {
+        return None;
+    }
+    Some((va, pa))
 }
 
 /// The process's heap: a `brk`-style top watermark in its own address space,
