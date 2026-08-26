@@ -888,4 +888,107 @@ mod tests {
         // with this opcode is ambiguous and must not.
         assert_eq!(RECEIVE_TIMEOUT, 0xffff);
     }
+
+    // ---- priority inheritance: transitive chain ----
+
+    #[test]
+    fn pi_transitive_chain_boosts_to_highest() {
+        // Three processes: A (level 10, urgent) → B (level 64) → C (level 200).
+        // A sends on ch_ab; B (boosted to 10) sends on ch_bc; C must be
+        // boosted to B's *effective* level (10), not B's base (64).
+        //
+        // The mock only tracks one channel, so we simulate the chain by
+        // asserting the boost target: when B (now effective 10) sends to C,
+        // the boost must be to 10, not 64.
+        let m = Mock::new(&[10, 64, 200, 128], Channel::new(CLIENT));
+        // Phase 1: A sends to B, boosting B to 10.
+        m.on_block.replace(Some(Rc::new(|m: &Mock| {
+            m.run(CLIENT, |m| {
+                send(m, &m.channel, Message::new(1, 1, &[])).unwrap();
+            });
+        })));
+        m.run(SERVER, |m| {
+            let _ = receive(m, &m.channel).unwrap();
+            // B is now at effective level 10 (boosted from 64).
+            assert_eq!(m.priority(SERVER), 10, "B boosted to A's level");
+        });
+        // Phase 2: B (effective 10) sends to C.  C (level 200) blocks;
+        // B's send is the fast path and must boost C to B's *effective*
+        // level (10), not B's base (64).
+        let m2 = Mock::new(&[10, 64, 200, 128], Channel::new(CLIENT));
+        // Simulate: the "sender" is at level 10 (B's effective after phase 1).
+        m2.on_block.replace(Some(Rc::new(|m: &Mock| {
+            m.run(CLIENT, |m| {
+                send(m, &m.channel, Message::new(1, 2, &[])).unwrap();
+            });
+        })));
+        m2.run(SERVER, |m2| {
+            let _ = receive(m2, &m2.channel).unwrap();
+            // C must be boosted to 10 (the sender's level), not 64.
+            assert_eq!(m2.priority(SERVER), 10, "C boosted transitively to A's level");
+        });
+        assert!(
+            m2.boosts.borrow().contains(&(SERVER, 10)),
+            "C must be boosted to 10; boosts: {:?}",
+            m2.boosts.borrow()
+        );
+    }
+
+    #[test]
+    fn pi_revert_on_next_block_after_sender_completes() {
+        // A (level 16) sends to B (level 200). B is boosted to 16.
+        // A completes (no more sends). B blocks again → unboosts to 200.
+        // This is the "revert on next block" semantics.
+        let m = Mock::new(&[16, 200, 128, 128], Channel::new(CLIENT));
+        m.on_block.replace(Some(Rc::new(|m: &Mock| {
+            m.run(CLIENT, |m| {
+                send(m, &m.channel, Message::new(1, 1, &[])).unwrap();
+            });
+        })));
+        m.run(SERVER, |m| {
+            let _ = receive(m, &m.channel).unwrap();
+            assert_eq!(m.priority(SERVER), 16, "boosted during exchange");
+            // B blocks again (queue empty). A close wakes it to Closed.
+            m.on_block.replace(Some(Rc::new(|m: &Mock| {
+                m.run(CLIENT, |m| {
+                    close(m, &m.channel);
+                });
+            })));
+            assert_eq!(receive(m, &m.channel), Err(IpcErr::Closed));
+            assert_eq!(m.priority(SERVER), 200, "reverted to base after block");
+        });
+        assert!(!m.unboosts.borrow().is_empty(), "at least one unboost (revert on block)");
+    }
+
+    // ---- closed channel with queued messages ----
+
+    #[test]
+    fn closed_channel_discards_queued_messages() {
+        // QNX convention: closing a channel discards any queued messages.
+        // A receive after close returns Closed immediately, even if the
+        // queue had messages.
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        m.run(CLIENT, |m| {
+            send(m, &m.channel, Message::new(1, 1, &[1])).unwrap();
+            send(m, &m.channel, Message::new(1, 2, &[2])).unwrap();
+        });
+        m.run(CLIENT, |m| {
+            close(m, &m.channel);
+        });
+        m.run(SERVER, |m| {
+            // The channel is closed: the queued messages are discarded.
+            assert_eq!(receive(m, &m.channel), Err(IpcErr::Closed));
+        });
+    }
+
+    #[test]
+    fn send_on_closed_channel_returns_closed() {
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        m.run(CLIENT, |m| {
+            close(m, &m.channel);
+        });
+        m.run(CLIENT, |m| {
+            assert_eq!(send(m, &m.channel, Message::new(1, 1, &[])), Err(IpcErr::Closed));
+        });
+    }
 }
