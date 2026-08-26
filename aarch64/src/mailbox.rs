@@ -9,8 +9,7 @@ use port::mcslock::{Lock, LockNode};
 use port::mem::{PhysAddr, PhysRange, VirtRange};
 use r9x_core::fdt::DeviceTree;
 
-#[cfg(target_os = "none")]
-use port::println;
+use port::iprintln;
 
 const MBOX_READ: usize = 0x00;
 const MBOX_STATUS: usize = 0x18;
@@ -31,7 +30,7 @@ pub fn init(dt: &DeviceTree) {
             *mailbox = Some(mbox);
         }
         Err(msg) => {
-            println!("can't initialise mailbox: {:?}", msg);
+            iprintln!("can't initialise mailbox: {:?}", msg);
         }
     }
 }
@@ -57,7 +56,7 @@ impl Mailbox {
                 Ok(Mailbox { mbox_virtrange, req_buf_virtrange, req_buf_physrange })
             }
             Err(msg) => {
-                println!("can't map mailbox {:?}", msg);
+                iprintln!("can't map mailbox {:?}", msg);
                 Err("can't create mailbox")
             }
         }?;
@@ -433,7 +432,7 @@ pub fn configure_framebuffer(width: u32, height: u32, bpp: u32) -> PhysRange {
                 let phys_addr = core::intrinsics::volatile_load(base.add(5));
                 let size = core::intrinsics::volatile_load(base.add(6));
                 FB_PHYS.store(phys_addr as u64, Ordering::SeqCst);
-                println!("  Framebuffer: {phys_addr:#010x} ({size:#x} bytes)");
+                iprintln!("  Framebuffer: {phys_addr:#010x} ({size:#x} bytes)");
                 PhysRange::new(
                     PhysAddr::new(phys_addr as u64),
                     PhysAddr::new(phys_addr as u64 + size as u64),

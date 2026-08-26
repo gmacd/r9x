@@ -455,6 +455,40 @@ pub(crate) fn sys_receive_at(
     }
 }
 
+/// SYSFB_CONFIGURE: configure the VideoCore framebuffer and map it into the
+/// calling process's page table at `FB_VA`.  Returns 0 on success, 1 if
+/// already configured.
+#[cfg(not(target_os = "none"))]
+pub(crate) fn sys_fb_configure() -> u64 {
+    1
+}
+#[cfg(target_os = "none")]
+pub(crate) fn sys_fb_configure() -> u64 {
+    // Already configured: refuse (the ALLOCATE tag would leak the old buffer).
+    if crate::mailbox::fb_range().is_some() {
+        return 1;
+    }
+    // Configure the framebuffer via the Mailbox.
+    let fb = crate::mailbox::configure_framebuffer(
+        r9x_abi::FB_WIDTH as u32,
+        r9x_abi::FB_HEIGHT as u32,
+        32,
+    );
+    // Map it into the calling process's page table.
+    let Some(aspace) = process::current_aspace() else {
+        return 1;
+    };
+    if aspace.map_mmio(&fb, r9x_abi::FB_VA).is_err() {
+        return 1;
+    }
+    // Invalidate the user TLB (the process may hold a stale entry or a
+    // translation fault for `FB_VA` from before the mapping).
+    unsafe {
+        core::arch::asm!("tlbi vmalle1is", "dsb ish", "isb", options(nomem, nostack),);
+    }
+    0
+}
+
 /// SYCSEND: `handle` on channel, `buf`/`len` the payload, `opcode`/`tag` the
 /// envelope.  Returns the x0 result code.
 #[cfg(target_os = "none")]

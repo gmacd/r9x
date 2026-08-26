@@ -133,11 +133,10 @@ pub extern "C" fn main9(dtb_va: usize) {
 
     let ns_handles = system::bringup();
 
-    // Configure the VideoCore framebuffer and spawn the display server.
-    // The display server writes the color bar to the kernel-mapped region
-    // at `FB_VA`.  It runs forever (the frame loop), so it is not in
+    // Spawn the display server.  It configures the framebuffer itself (via
+    // `SYS_FB_CONFIGURE`) and writes the color bar to the kernel-mapped
+    // region at `FB_VA`.  It runs forever (the frame loop), so it is not in
     // `bringup()` — `run_all` in the `system` image would never return.
-    mailbox::configure_framebuffer(640, 480, 32);
     system::spawn_display(ns_handles);
 
     // The console server is up (spawned; its BIND is processed during the

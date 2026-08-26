@@ -134,6 +134,13 @@ pub const SYS_CLOCK: u64 = 25;
 /// message, whichever is first.
 pub const SYS_RECEIVE_AT: u64 = 26;
 
+/// Configure the VideoCore framebuffer and map it into the calling
+/// process's page table.  No arguments (the resolution and depth are fixed:
+/// 640×480×32).  The kernel sends the Mailbox `SET_*` + `ALLOCATE` sequence
+/// and maps the returned physical address at [`FB_VA`] with Device memory
+/// attributes.  Result in arg0: 0 on success, 1 if already configured.
+pub const SYS_FB_CONFIGURE: u64 = 27;
+
 // `SYS_SPAWN` result codes.  A value below `SPAWN_ERR_MIN` is a process id
 // (a table index, 0..NPROCS, and NPROCS is far below the bound); at or above
 // it is one of these errors.  The spawner maps them back to its own errors.

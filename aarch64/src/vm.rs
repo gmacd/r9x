@@ -17,8 +17,7 @@ use port::{
     pagealloc::PageAllocError,
 };
 
-#[cfg(target_os = "none")]
-use port::println;
+use port::iprintln;
 
 //static mut KERNEL_PAGETABLE: RootPageTable = RootPageTable::empty();
 static mut USER_PAGETABLE: RootPageTable = RootPageTable::empty();
@@ -357,7 +356,7 @@ impl Table {
         let mut entry = self.entries[index];
 
         if entry.valid() && !entry.is_table(level) {
-            println!("error:vm:next_mut:entry is not a valid table entry:{entry:?} {level:?}");
+            iprintln!("error:vm:next_mut:entry is not a valid table entry:{entry:?} {level:?}");
             return Err(PageTableError::EntryIsNotTable);
         }
 
@@ -374,7 +373,7 @@ impl Table {
         let page_pa = match page_pa {
             Ok(p) => p,
             Err(err) => {
-                println!("error:vm:next_mut:can't allocate physpage");
+                iprintln!("error:vm:next_mut:can't allocate physpage");
                 return Err(PageTableError::AllocationFailed(err));
             }
         };
@@ -457,9 +456,10 @@ impl RootPageTable {
         let dest_entry = match dest_entry {
             Ok(e) => e,
             Err(err) => {
-                println!(
+                iprintln!(
                     "error:vm:map_to:couldn't find page table entry. va:{:#x} err:{:?}",
-                    va, err
+                    va,
+                    err
                 );
                 return Err(err);
             }
@@ -495,7 +495,7 @@ impl RootPageTable {
         if !range.start.is_multiple_of(page_size.size() as u64)
             || !range.end.is_multiple_of(page_size.size() as u64)
         {
-            println!(
+            iprintln!(
                 "error:vm:map_phys_range:range not on page boundary. debug_name:{debug_name} range:{range} page_size:{page_size:?}",
             );
             return Err(PageTableError::PhysRangeIsNotOnPageBoundary);

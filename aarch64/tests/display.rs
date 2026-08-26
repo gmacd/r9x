@@ -48,10 +48,6 @@ pub extern "C" fn main9(dtb_va: usize) {
         vm::switch(vm::user_pagetable(), vm::RootPageTableType::User);
     }
 
-    // Configure the VideoCore framebuffer (the display server writes to the
-    // kernel-mapped region at `FB_VA`).
-    mailbox::configure_framebuffer(640, 480, 32);
-
     // The nameserver: spawned first so the display server's BIND is
     // processed.  The nameserver blocks on its first receive; the display
     // server's BIND send wakes it (the IPC fast path).

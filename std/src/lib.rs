@@ -23,6 +23,9 @@ extern crate alloc;
 /// The compiler's memory builtins (`memcpy` / `memset` / `memcmp`), which a
 /// target whose `os` is not `"none"` must provide itself.
 pub mod builtin;
+/// The framebuffer: configure the VideoCore framebuffer and get access to
+/// the kernel-mapped region.
+pub mod fb;
 /// The thin syscall core and the message wrappers over it: the only part of
 /// r9 that needs a per-architecture shim.
 pub mod ipc;
