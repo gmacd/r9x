@@ -95,8 +95,8 @@ fn flip(back: &[u8]) {
 /// allocate the back buffer, publish the name, and run the frame loop forever.
 fn main() {
     // Read the nameserver's inbound channel.
-    let (ns_in, _ns_out) = rt::handles();
-    let ns_in = ns_in as u64;
+    let ns_in = rt::handle_at(2) as u64;
+    let _ns_out = rt::handle_at(3);
 
     // Look up the mailbox server's channel pair in the nameserver.
     // The reply comes on our own channel, not the nameserver's outbound.

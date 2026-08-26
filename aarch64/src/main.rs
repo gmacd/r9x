@@ -100,7 +100,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     // `system` integration test (both call `system::bringup`).
     println!("starting system");
 
-    let (ns_handles, _mbox_handles) = system::bringup();
+    let ns_handles = system::bringup();
 
     // Spawn the display server.  It configures the framebuffer via IPC to
     // the mailbox server (found by RESOLVE), maps it via `SYS_MAP_MMIO`, and

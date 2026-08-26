@@ -92,8 +92,8 @@ pub extern "C" fn main9(dtb_va: usize) {
     let ns_handles = process::Handles {
         inbound: ns_in as u32,
         outbound: ns_out as u32,
-        extra_inbound: 0,
-        extra_outbound: 0,
+        ns_inbound: 0,
+        ns_outbound: 0,
     };
 
     let ns =

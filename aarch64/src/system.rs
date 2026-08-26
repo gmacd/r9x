@@ -24,15 +24,20 @@ static MAILBOX_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mailbox.el
 static CHILD_EMBEDDED: registry::EmbeddedElf =
     registry::EmbeddedElf { bytes: CHILD_ELF, name: "child" };
 
-/// Spawn the full system: the nameserver, the console, and init (the process
-/// manager, which `SYS_SPAWN`s the child by index).
+/// Spawn the full system: the nameserver, the mailbox, the console, and init
+/// (the process manager, which `SYS_SPAWN`s the child by index).
+///
+/// Returns the nameserver's channel pair — the one handle every other server
+/// needs at spawn time (to `BIND`/`RESOLVE` through it). Servers that need to
+/// talk to a specific other server (e.g. the display → mailbox) resolve the
+/// target through the nameserver; no per-server handles are passed.
 ///
 /// The nameserver must be up before the console server's BIND is processed.
 /// This holds by construction: the nameserver is spawned first and blocks on
 /// its first receive; the console server's BIND send wakes it (the IPC fast
 /// path); the nameserver processes the BIND before the console server blocks
 /// on its post-bind receive.
-pub fn bringup() -> (process::Handles, process::Handles) {
+pub fn bringup() -> process::Handles {
     // Register the image registry: init (the process manager) spawns the
     // child by index, so the child must be registered before init runs.
     // index 0 is the child; the nameserver and console are the init-context
@@ -45,8 +50,8 @@ pub fn bringup() -> (process::Handles, process::Handles) {
     let ns_handles = process::Handles {
         inbound: ns_in as u32,
         outbound: ns_out as u32,
-        extra_inbound: 0,
-        extra_outbound: 0,
+        ns_inbound: 0,
+        ns_outbound: 0,
     };
     // init's own pair: the process manager reads its child-state (the
     // generalized `HANDLES_VA` header) before it can spawn, so it needs a
@@ -56,26 +61,17 @@ pub fn bringup() -> (process::Handles, process::Handles) {
     let init_handles = process::Handles {
         inbound: init_in as u32,
         outbound: init_out as u32,
-        extra_inbound: 0,
-        extra_outbound: 0,
+        ns_inbound: 0,
+        ns_outbound: 0,
     };
 
-    // The mailbox server: owns the BCM283x Mailbox property interface.  It
-    // must be up before the display server (the display server sends it a
-    // framebuffer config request during init).  The nameserver's handles go in
-    // the extra fields (the server makes its own channel pair for serving).
-    let mbox_handles = process::Handles {
-        inbound: 0,
-        outbound: 0,
-        extra_inbound: ns_in as u32,
-        extra_outbound: ns_out as u32,
-    };
+    let server_ns = process::Handles::for_server(&ns_handles);
 
     process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
-    process::spawn(&process::Image::Elf { bytes: MAILBOX_ELF, handles: Some(mbox_handles) });
-    process::spawn(&process::Image::Elf { bytes: CONSOLE_ELF, handles: Some(ns_handles) });
+    process::spawn(&process::Image::Elf { bytes: MAILBOX_ELF, handles: Some(server_ns) });
+    process::spawn(&process::Image::Elf { bytes: CONSOLE_ELF, handles: Some(server_ns) });
     process::spawn(&process::Image::Elf { bytes: INIT_ELF, handles: Some(init_handles) });
-    (ns_handles, mbox_handles)
+    ns_handles
 }
 
 /// Spawn the display server, handing it the nameserver's channel pair so it
@@ -84,11 +80,6 @@ pub fn bringup() -> (process::Handles, process::Handles) {
 /// (the frame loop), so it is not in `bringup()` — `run_all` in the `system`
 /// image would never return.
 pub fn spawn_display(ns_handles: process::Handles) {
-    let display_handles = process::Handles {
-        inbound: ns_handles.inbound,
-        outbound: ns_handles.outbound,
-        extra_inbound: 0,
-        extra_outbound: 0,
-    };
+    let display_handles = process::Handles::for_server(&ns_handles);
     process::spawn(&process::Image::Elf { bytes: DISPLAY_ELF, handles: Some(display_handles) });
 }

@@ -65,8 +65,8 @@ pub extern "C" fn main9(dtb_va: usize) {
     let handles = process::Handles {
         inbound: in_h as u32,
         outbound: out_h as u32,
-        extra_inbound: 0,
-        extra_outbound: 0,
+        ns_inbound: 0,
+        ns_outbound: 0,
     };
 
     // Register the image registry before any spawn can reference an index: the

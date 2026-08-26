@@ -539,15 +539,17 @@ pub enum Image<'a> {
     Elf { bytes: &'a [u8], handles: Option<Handles> },
 }
 
-/// The channel pair the spawner hands a process: written as
-/// `[inbound:4 LE][outbound:4 LE]` to [`port::user::HANDLES_VA`] before the
-/// process's first instruction.  It is the one way a value crosses from the
-/// spawner (a kernel image) into a process's own address space — a server
-/// cannot be told its handles by any constant it knows (unlike its own MMIO
-/// base), so the spawner must pass them.  For the first server (the
-/// nameserver) this is its own pair — it is the first server, so nothing
-/// exists yet that a client could ask to find it; for a later server (the
-/// console server) this is the nameserver's pair, so it can `BIND` to it.
+/// The channel handles the spawner writes to [`port::user::HANDLES_VA`]
+/// before the process's first instruction.  Layout on the page:
+/// `[n_handles:4][inbound:4][outbound:4][ns_inbound:4][ns_outbound:4]`.
+///
+/// Convention: `inbound`/`outbound` are the server's **own** serving pair
+/// (zero at spawn — the server creates it at runtime via `SYCCREATECHAN`);
+/// `ns_inbound`/`ns_outbound` are the **nameserver's** pair (so the
+/// server can `BIND`/`RESOLVE` through it).  The nameserver itself is the
+/// exception: it is first, so it gets its own pair in `inbound`/`outbound`
+/// and zeros in the extra fields.
+///
 /// Defined unconditionally (plain data) so the host build sees it too.
 #[derive(Clone, Copy)]
 pub struct Handles {
@@ -557,8 +559,21 @@ pub struct Handles {
     pub outbound: u32,
     /// A second pair (for servers that need to talk to two other servers).
     /// Zero when not used.
-    pub extra_inbound: u32,
-    pub extra_outbound: u32,
+    pub ns_inbound: u32,
+    pub ns_outbound: u32,
+}
+
+impl Handles {
+    /// A server's handles: own pair is zero (created at runtime via
+    /// `SYCCREATECHAN`), nameserver's pair in the extra fields.
+    pub fn for_server(ns: &Handles) -> Self {
+        Self {
+            inbound: 0,
+            outbound: 0,
+            ns_inbound: ns.inbound,
+            ns_outbound: ns.outbound,
+        }
+    }
 }
 
 /// Start a process from an image, mapping its pages into a fresh per-process
@@ -782,14 +797,14 @@ fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
         // The generalized header: `[n_handles:4][handle:4 ...]`.  A server's
         // state is one or two pairs: the nameserver's (always) and, for the
         // display server, the mailbox server's.
-        let n = if h.extra_inbound != 0 || h.extra_outbound != 0 { 4 } else { 2 };
+        let n = if h.ns_inbound != 0 || h.ns_outbound != 0 { 4 } else { 2 };
         let mut header = [0u8; 20];
         header[0..4].copy_from_slice(&(n as u32).to_le_bytes());
         header[4..8].copy_from_slice(&h.inbound.to_le_bytes());
         header[8..12].copy_from_slice(&h.outbound.to_le_bytes());
         if n == 4 {
-            header[12..16].copy_from_slice(&h.extra_inbound.to_le_bytes());
-            header[16..20].copy_from_slice(&h.extra_outbound.to_le_bytes());
+            header[12..16].copy_from_slice(&h.ns_inbound.to_le_bytes());
+            header[16..20].copy_from_slice(&h.ns_outbound.to_le_bytes());
         }
         let len = n as usize * 4 + 4;
         // SAFETY: kptr is a freshly mapped, zeroed page, valid and

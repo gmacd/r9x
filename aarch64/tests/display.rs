@@ -58,8 +58,8 @@ pub extern "C" fn main9(dtb_va: usize) {
     let ns_handles = process::Handles {
         inbound: ns_in as u32,
         outbound: ns_out as u32,
-        extra_inbound: 0,
-        extra_outbound: 0,
+        ns_inbound: 0,
+        ns_outbound: 0,
     };
     process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
 
@@ -70,8 +70,8 @@ pub extern "C" fn main9(dtb_va: usize) {
         handles: Some(process::Handles {
             inbound: 0,
             outbound: 0,
-            extra_inbound: ns_in as u32,
-            extra_outbound: ns_out as u32,
+            ns_inbound: ns_in as u32,
+            ns_outbound: ns_out as u32,
         }),
     });
 
@@ -80,8 +80,8 @@ pub extern "C" fn main9(dtb_va: usize) {
     let display_handles = process::Handles {
         inbound: ns_in as u32,
         outbound: ns_out as u32,
-        extra_inbound: 0,
-        extra_outbound: 0,
+        ns_inbound: 0,
+        ns_outbound: 0,
     };
     process::spawn(&process::Image::Elf { bytes: DISPLAY_ELF, handles: Some(display_handles) });
 

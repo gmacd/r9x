@@ -78,8 +78,10 @@ fn main() {
     let (in_h, out_h) = ipc::create_pair();
 
     // Read the nameserver's inbound channel: the one to send the `BIND` to.
-    // The spawner handed this process the nameserver's handles.
-    let (ns_in, _ns_out) = rt::handles();
+    // The spawner handed this process the nameserver's handles (extra fields;
+    // the main pair is this server's own, created at runtime via SYCCREATECHAN).
+    let ns_in = rt::handle_at(2);
+    let _ns_out = rt::handle_at(3);
 
     // Create a reply channel: the nameserver sends the result here, not on its
     // own outbound (which would be shared by all clients and race).
