@@ -655,7 +655,13 @@ impl QemuStep {
                 apply_to_qemu_step(&mut cmd, &self.config);
 
                 // TODO Choose UART at cmdline
-                cmd.arg("-nographic");
+                // `-nographic` for test images (they exit via semihosting,
+                // no display needed).  Omitted for the default kernel image
+                // so QEMU opens a display window (the VideoCore framebuffer
+                // is visible).
+                if image_path.is_some() {
+                    cmd.arg("-nographic");
+                }
 
                 // The PL011 (UART0, serial_hd(0)) is the early console, so it
                 // lands on the terminal; the mini-UART (UART1, serial_hd(1))

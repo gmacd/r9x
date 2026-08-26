@@ -55,7 +55,7 @@ use port::{iprintln, mem};
 // (the number in x8, arguments in x0-x4) is spelled where the trap frame is
 // laid out.
 pub use r9x_abi::{
-    SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_MAX_HANDLES, SPAWN_NO_SLOT,
+    FB_VA, SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_MAX_HANDLES, SPAWN_NO_SLOT,
     SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_CLOCK, SYS_FREE, SYS_RECEIVE_AT,
     SYS_SPAWN, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
 };
@@ -781,6 +781,16 @@ fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
         // SAFETY: kptr is a freshly mapped, zeroed page, valid and
         // kernel-writable, and 12 bytes fit.
         unsafe { core::ptr::copy_nonoverlapping(header.as_ptr(), kptr, 12) };
+    }
+    // Map the framebuffer into the process's page table (if configured).
+    // Every spawned process gets the mapping; the display server writes to it,
+    // the others simply don't use it.  Device memory attributes (uncached)
+    // so the VideoCore sees writes immediately.
+    if let Some(fb) = crate::mailbox::fb_range() {
+        loaded
+            .aspace
+            .map_mmio(&fb, r9x_abi::FB_VA)
+            .unwrap_or_else(|err| panic!("elf: framebuffer map: {err:?}"));
     }
     install(loaded.aspace, loaded.entry, loaded.user_sp, loaded.heap_base)
 }

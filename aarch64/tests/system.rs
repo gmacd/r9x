@@ -43,7 +43,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     // pairs, spawn the nameserver, the console, and init (which SYS_SPAWNs the
     // child by index).  No `set_console_live` here — the image still uses
     // `println!` for its check.
-    system::bringup();
+    let _ns_handles = system::bringup();
 
     process::run_all();
 

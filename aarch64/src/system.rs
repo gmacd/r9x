@@ -16,6 +16,7 @@ static CONSOLE_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/console.el
 static NAMESERVER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nameserver.elf"));
 static INIT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.elf"));
 static CHILD_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/child.elf"));
+static DISPLAY_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/display.elf"));
 
 // The registry entry for the child: `static` so it outlives the `register`
 // borrow (the registry holds `&'static` entries).
@@ -30,7 +31,7 @@ static CHILD_EMBEDDED: registry::EmbeddedElf =
 /// its first receive; the console server's BIND send wakes it (the IPC fast
 /// path); the nameserver processes the BIND before the console server blocks
 /// on its post-bind receive.
-pub fn bringup() {
+pub fn bringup() -> process::Handles {
     // Register the image registry: init (the process manager) spawns the
     // child by index, so the child must be registered before init runs.
     // index 0 is the child; the nameserver and console are the init-context
@@ -51,4 +52,14 @@ pub fn bringup() {
     process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
     process::spawn(&process::Image::Elf { bytes: CONSOLE_ELF, handles: Some(ns_handles) });
     process::spawn(&process::Image::Elf { bytes: INIT_ELF, handles: Some(init_handles) });
+    ns_handles
+}
+
+/// Spawn the display server, handing it the nameserver's channel pair so it
+/// can publish `/dev/display`.  Called after `bringup()` (the nameserver must
+/// be up before the BIND is processed).  The display server runs forever
+/// (the frame loop), so it is not in `bringup()` — `run_all` in the `system`
+/// image would never return.
+pub fn spawn_display(ns_handles: process::Handles) {
+    process::spawn(&process::Image::Elf { bytes: DISPLAY_ELF, handles: Some(ns_handles) });
 }

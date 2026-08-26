@@ -175,6 +175,7 @@ dependencies = [
 name = "display"
 version = "0.1.0"
 dependencies = [
+ "r9x-abi",
  "r9x-std",
 ]
 

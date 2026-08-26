@@ -1,4 +1,5 @@
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::deviceutil::{find_dt_physrange, map_device_register};
 use crate::io::{read_reg, write_reg};
@@ -156,7 +157,15 @@ where
 // https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface#tags-arm-to-vc
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 enum TagId {
+    // Framebuffer tags (channel 4, per QEMU's raspberrypi-fw-defs.h).
+    FbAllocate = 0x0004_0001,
+    FbRelease = 0x0004_8001,
+    FbSetPhysicalWidthHeight = 0x0004_8003,
+    FbSetDepth = 0x0004_8005,
+    FbSetPixelOrder = 0x0004_8006,
+    FbGetPitch = 0x0004_0008,
     GetFirmwareRevision = 0x0000_0001,
     GetBoardModel = 0x0001_0001,
     GetBoardRevision = 0x0001_0002,
@@ -315,4 +324,121 @@ pub fn get_board_serial() -> u64 {
     // Wrapping in a struct holding a single u64 doesn't work either.
     let res: [u32; 2] = request(0, &tags);
     ((res[0] as u64) << 32) | res[1] as u64
+}
+
+/// The physical address of the framebuffer (set by `configure_framebuffer`).
+/// Zero when the framebuffer is not configured.
+static FB_PHYS: AtomicU64 = AtomicU64::new(0);
+
+/// Return the framebuffer's physical range, or `None` if not configured.
+pub fn fb_range() -> Option<PhysRange> {
+    let start = FB_PHYS.load(Ordering::SeqCst);
+    if start == 0 {
+        return None;
+    }
+    Some(PhysRange::new(PhysAddr::new(start), PhysAddr::new(start + r9x_abi::FB_SIZE as u64)))
+}
+
+/// Configure the VideoCore framebuffer via the Mailbox property interface.
+///
+/// The QEMU firmware (and the real Pi firmware) copies the current config
+/// at the start of each request.  The `ALLOCATE` tag reads `fbconfig.base`
+/// from that copy, so a single request with `SET_*` + `ALLOCATE` returns the
+/// *previous* config's base (0 on first call).  We therefore send two
+/// requests:
+///
+/// 1. `SET_PHYSICAL_WIDTH_HEIGHT`, `SET_DEPTH`, `SET_PIXEL_ORDER` — the
+///    firmware validates and reconfigures the framebuffer (allocating the
+///    buffer in VC RAM).
+/// 2. `ALLOCATE` — the firmware reads the now-current config's base address
+///    and size.
+///
+/// Stores the physical address in `FB_PHYS` and returns the physical range.
+#[allow(dead_code)]
+pub fn configure_framebuffer(width: u32, height: u32, bpp: u32) -> PhysRange {
+    let node = LockNode::new();
+    MAILBOX
+        .lock(&node)
+        .as_mut()
+        .map(|mb| {
+            let base = mb.req_buf_virtrange.start as u64 as *mut u32;
+            // SAFETY: base is a valid device-memory pointer to the mailbox
+            // request buffer, a full page, and the mailbox is locked.
+            unsafe {
+                // --- Request 1: configure the framebuffer ---
+                // Tag layout (all little-endian u32 words):
+                //   word 0:  size = 60
+                //   word 1:  code = 0 (request)
+                //   word 2:  SET_PHYSICAL_WIDTH_HEIGHT tag_id
+                //   word 3:  buf_size = 8
+                //   word 4:  code = 0 (request)
+                //   word 5:  width
+                //   word 6:  height
+                //   word 7:  SET_DEPTH tag_id
+                //   word 8:  buf_size = 4
+                //   word 9:  code = 0 (request)
+                //   word 10: bpp
+                //   word 11: SET_PIXEL_ORDER tag_id
+                //   word 12: buf_size = 4
+                //   word 13: code = 0 (request)
+                //   word 14: pixel_order = 0 (XRGB)
+                //   word 15: end tag = 0
+                const CFG_SIZE: u32 = 64;
+                core::intrinsics::volatile_set_memory(base as *mut u8, 0, CFG_SIZE as usize);
+                core::intrinsics::volatile_store(base.add(0), CFG_SIZE);
+                core::intrinsics::volatile_store(base.add(1), 0);
+                core::intrinsics::volatile_store(
+                    base.add(2),
+                    TagId::FbSetPhysicalWidthHeight as u32,
+                );
+                core::intrinsics::volatile_store(base.add(3), 8);
+                core::intrinsics::volatile_store(base.add(4), 0);
+                core::intrinsics::volatile_store(base.add(5), width);
+                core::intrinsics::volatile_store(base.add(6), height);
+                core::intrinsics::volatile_store(base.add(7), TagId::FbSetDepth as u32);
+                core::intrinsics::volatile_store(base.add(8), 4);
+                core::intrinsics::volatile_store(base.add(9), 0);
+                core::intrinsics::volatile_store(base.add(10), bpp);
+                core::intrinsics::volatile_store(base.add(11), TagId::FbSetPixelOrder as u32);
+                core::intrinsics::volatile_store(base.add(12), 4);
+                core::intrinsics::volatile_store(base.add(13), 0);
+                core::intrinsics::volatile_store(base.add(14), 0); // XRGB
+                core::intrinsics::volatile_store(base.add(15), 0); // end tag
+
+                mb.request();
+
+                // --- Request 2: allocate (read the base address) ---
+                // Tag layout:
+                //   word 0:  size = 20
+                //   word 1:  code = 0 (request)
+                //   word 2:  ALLOCATE tag_id
+                //   word 3:  buf_size = 8 (response: phys_addr + size)
+                //   word 4:  code = 0 (request)
+                //   word 5:  (response: phys_addr)
+                //   word 6:  (response: size)
+                //   word 7:  end tag = 0
+                const ALLOC_SIZE: u32 = 32;
+                core::intrinsics::volatile_set_memory(base as *mut u8, 0, ALLOC_SIZE as usize);
+                core::intrinsics::volatile_store(base.add(0), ALLOC_SIZE);
+                core::intrinsics::volatile_store(base.add(1), 0);
+                core::intrinsics::volatile_store(base.add(2), TagId::FbAllocate as u32);
+                core::intrinsics::volatile_store(base.add(3), 8); // response body size
+                core::intrinsics::volatile_store(base.add(4), 0); // request
+                // words 5-6: response (phys_addr, size) — written by firmware
+                core::intrinsics::volatile_store(base.add(7), 0); // end tag
+
+                mb.request();
+
+                // Read the ALLOCATE response: phys_addr at word 5, size at word 6.
+                let phys_addr = core::intrinsics::volatile_load(base.add(5));
+                let size = core::intrinsics::volatile_load(base.add(6));
+                FB_PHYS.store(phys_addr as u64, Ordering::SeqCst);
+                println!("  Framebuffer: {phys_addr:#010x} ({size:#x} bytes)");
+                PhysRange::new(
+                    PhysAddr::new(phys_addr as u64),
+                    PhysAddr::new(phys_addr as u64 + size as u64),
+                )
+            }
+        })
+        .expect("mailbox not initialised")
 }

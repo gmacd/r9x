@@ -131,7 +131,14 @@ pub extern "C" fn main9(dtb_va: usize) {
     // `system` integration test (both call `system::bringup`).
     println!("starting system");
 
-    system::bringup();
+    let ns_handles = system::bringup();
+
+    // Configure the VideoCore framebuffer and spawn the display server.
+    // The display server writes the color bar to the kernel-mapped region
+    // at `FB_VA`.  It runs forever (the frame loop), so it is not in
+    // `bringup()` — `run_all` in the `system` image would never return.
+    mailbox::configure_framebuffer(640, 480, 32);
+    system::spawn_display(ns_handles);
 
     // The console server is up (spawned; its BIND is processed during the
     // first run_all).  Gate off the kernel's normal output: from here on,

@@ -3,9 +3,9 @@
 //!
 //! It is the Amiga's demoscene routine in user-space: prepare the frame, wait
 //! for the vertical blank (a timer deadline on QEMU — there is no vblank
-//! interrupt), update the display, repeat.  The kernel never touches the
-//! frame buffer; the display server owns it (a software buffer in its own
-//! heap, allocated via the `r9x_std` global allocator).
+//! interrupt), update the display, repeat.  The framebuffer is in VC RAM
+//! (allocated by the VideoCore firmware via the Mailbox property interface);
+//! the kernel maps it into this process's page table at `FB_VA`.
 //!
 //! The frame loop:
 //! 1. Write a moving color bar to the frame buffer (driven by the frame
@@ -31,18 +31,13 @@
 
 extern crate alloc;
 
-use alloc::vec;
-use alloc::vec::Vec;
+use r9x_abi::{FB_HEIGHT, FB_SIZE, FB_VA, FB_WIDTH};
 use r9x_std::ipc;
 use r9x_std::rt;
 use r9x_std::time;
 
-/// The frame buffer's dimensions: 640×480, RGBA (4 bytes per pixel).
-/// A standard VGA resolution — small enough for the kernel heap (1.2 MB),
-/// large enough to see the color bar move.
-const WIDTH: usize = 640;
-const HEIGHT: usize = 480;
-const FB_SIZE: usize = WIDTH * HEIGHT * 4;
+const WIDTH: usize = FB_WIDTH;
+const HEIGHT: usize = FB_HEIGHT;
 
 /// The color bar's width, in pixels.  A 32-pixel-wide bar — wide enough to
 /// see, narrow enough to move noticeably across the frame.
@@ -67,35 +62,48 @@ pub extern "C" fn start(dtb_va: usize) -> ! {
 /// Write a moving color bar to the frame buffer.  The bar is a vertical
 /// stripe at `x = frame_number % WIDTH`, `BAR_WIDTH` pixels wide, bright
 /// green (RGB 0, 255, 0, fully opaque).  The rest of the frame is black.
-fn write_frame(fb: &mut [u8], frame_number: u64) {
+///
+/// # Safety
+/// `fb` must point to a valid, writable region of at least `FB_SIZE` bytes.
+unsafe fn write_frame(fb: *mut u8, frame_number: u64) {
     let bar_x = (frame_number as usize) % WIDTH;
-    fb.fill(0);
-    let mut y = 0;
-    while y < HEIGHT {
-        let row_start = (y * WIDTH + bar_x) * 4;
-        let mut x = 0;
-        while x < BAR_WIDTH && bar_x + x < WIDTH {
-            let px = row_start + x * 4;
-            fb[px] = 0;
-            fb[px + 1] = 255;
-            fb[px + 2] = 0;
-            fb[px + 3] = 255;
-            x += 1;
+    // SAFETY: fb points to a valid, writable region of at least FB_SIZE bytes.
+    unsafe {
+        core::ptr::write_bytes(fb, 0, FB_SIZE);
+        let mut y = 0;
+        while y < HEIGHT {
+            let row_start = (y * WIDTH + bar_x) * 4;
+            let mut x = 0;
+            while x < BAR_WIDTH && bar_x + x < WIDTH {
+                let px = row_start + x * 4;
+                core::ptr::write_volatile(fb.add(px), 0);
+                core::ptr::write_volatile(fb.add(px + 1), 255);
+                core::ptr::write_volatile(fb.add(px + 2), 0);
+                core::ptr::write_volatile(fb.add(px + 3), 255);
+                x += 1;
+            }
+            y += 1;
         }
-        y += 1;
     }
 }
 
-/// The server body: allocate the frame buffer, publish the name, and run the
-/// frame loop forever.
+/// The server body: write to the kernel-mapped framebuffer, publish the
+/// name, and run the frame loop forever.
 fn main() {
-    // Allocate the frame buffer.  The `Vec` is backed by the `r9x_std`
-    // global allocator (the kernel's brk-style heap).  1.2 MB — well within
-    // the heap's bound.
-    let mut fb: Vec<u8> = vec![0u8; FB_SIZE];
+    // The framebuffer is in VC RAM (a physical address returned by the
+    // VideoCore firmware via the Mailbox property interface).  The kernel
+    // maps it into this process's page table at `FB_VA` with Device memory
+    // attributes (uncached), so the VideoCore sees writes immediately.
+    //
+    // SAFETY: the kernel mapped the framebuffer into this process's page
+    // table at `FB_VA` before spawning us.  The region is `FB_SIZE` bytes,
+    // readable and writable, and no other pointer aliases it (the VideoCore
+    // reads it, but the ARM never writes it through any other pointer).
+    let fb_ptr = FB_VA as *mut u8;
 
     // Write the first frame (frame_number = 0: the bar is at x = 0).
-    write_frame(&mut fb, 0);
+    // SAFETY: the kernel mapped the framebuffer at `FB_VA` before spawning us.
+    unsafe { write_frame(fb_ptr, 0) };
 
     // Create the pacing channel.
     let pacing_chan = ipc::create_chan();
@@ -128,7 +136,8 @@ fn main() {
     let mut frame_number: u64 = 0;
     loop {
         frame_number = frame_number.wrapping_add(1);
-        write_frame(&mut fb, frame_number);
+        // SAFETY: the kernel mapped the framebuffer at `FB_VA` before spawning us.
+        unsafe { write_frame(fb_ptr, frame_number) };
         let mut buf = [0u8; 0];
         let deadline = time::now().saturating_add(time::FRAME_PERIOD);
         let _ = ipc::receive_at(pacing_chan, &mut buf, deadline);

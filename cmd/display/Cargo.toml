@@ -18,6 +18,7 @@ default-target = "aarch64-unknown-none"
 
 [dependencies]
 r9x-std = { path = "../../std" }
+r9x-abi = { path = "../../abi" }
 
 [lints]
 workspace = true
