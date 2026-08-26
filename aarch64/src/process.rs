@@ -56,8 +56,8 @@ use port::{iprintln, mem};
 // laid out.
 pub use r9x_abi::{
     SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_MAX_HANDLES, SPAWN_NO_SLOT,
-    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_FREE, SYS_SPAWN, SYSEXIT,
-    SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
+    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_CLOCK, SYS_FREE, SYS_RECEIVE_AT,
+    SYS_SPAWN, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
 };
 
 /// The exit status a faulted process is marked with: distinct from a clean
@@ -259,6 +259,16 @@ struct Process {
     heap_base: usize,
     heap_brk: usize,
     heap_hwm: usize,
+    /// The wake deadline (a counter tick count) when the process is blocked
+    /// in a bounded wait (`SYS_RECEIVE_AT`); `None` for an unbounded wait
+    /// (a plain `SYCRECEIVE`) or when not blocked.  Set under the table lock
+    /// before the block, cleared under the lock by the wake (a message or the
+    /// tick's deadline expiry), so the tick's scan and the wake's clear never
+    /// race (module docs).  The tick reads the counter and wakes any process
+    /// whose deadline has passed; a message that arrives first is woken by
+    /// the `send`'s fast path, which clears the deadline through the same
+    /// wake.
+    deadline: Option<u64>,
 }
 
 /// One optional process per slot, all empty.  Spelled out rather than
@@ -418,16 +428,50 @@ static TICK: Tick = Tick;
 #[cfg(target_os = "none")]
 static TICK_TIMER: Timer = Timer::periodic(TICK_PERIOD, &TICK);
 
+/// Wake every process whose bounded-wait deadline has passed: the tick's
+/// deadline half (the other half is the preemption `resched`).  Reads the
+/// counter once, scans the (small) table, and wakes each expired process —
+/// within the three-thing budget (a register read, a scan, a wake).  A
+/// woken process is made Runnable and its deadline cleared (through [`wake`]),
+/// so a later tick does not fire it again.  Runs in the trap tail (interrupt
+/// context): it never computes a clock value for a process, only compares the
+/// counter against stored deadlines.
+#[cfg(target_os = "none")]
+fn check_deadlines() {
+    let now = crate::timer::counter();
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    for slot in table.iter_mut() {
+        if let Some(p) = slot.as_mut()
+            && p.state == State::Blocked
+            && let Some(deadline) = p.deadline
+            && deadline <= now
+        {
+            // The lock is held across the wake: the wake is the same table
+            // write (state + deadline) already under this lock, so it is
+            // inlined rather than taken through the public `wake` (which
+            // would re-lock and self-deadlock).
+            p.state = State::Runnable;
+            p.deadline = None;
+        }
+    }
+}
+
 /// The tail of the IRQ path: after CVAL is re-armed (deasserting the
 /// level line) and the EOI is done, consume the tick's flag and, if a
 /// process is current, reschedule — counting a switch as a
 /// preemption.  With TPIDR null (a timer taken while the kernel
 /// runs) the flag is simply consumed: there is nothing to preempt.
+///
+/// The deadline scan runs whether or not a process is current: a bounded
+/// wait is woken by the tick even when the kernel (not a process) is on
+/// CPU, so the scan is not gated on a non-null TPIDR.
 #[cfg(target_os = "none")]
 pub(crate) fn irq_resched() {
     if !NEED_RESCHED.swap(false, Ordering::Acquire) {
         return;
     }
+    check_deadlines();
     let cur = unsafe { tpidr_current() };
     if cur.is_null() {
         return;
@@ -847,6 +891,7 @@ fn try_install(
         heap_base,
         heap_brk: heap_base,
         heap_hwm: heap_base,
+        deadline: None,
     };
     table[id] = Some(proc);
     Some(id)
@@ -1354,9 +1399,41 @@ pub(crate) fn block_current() -> bool {
     true
 }
 
+/// Put the current process off the ready set with a wake `deadline` (a
+/// counter tick): record the deadline on the process and block.  The arch's
+/// tick wakes the process when the counter reaches the deadline; a message
+/// that arrives first is woken by the `send`'s fast path.  The deadline is
+/// cleared by the matching [`wake`] (both the tick and the `send` wake through
+/// it), so a `SYS_RECEIVE_AT` that returns (a message or a timeout) leaves no
+/// stale deadline the tick would fire on later.
+#[cfg(target_os = "none")]
+pub(crate) fn block_at(deadline: u64) {
+    let node = LockNode::new();
+    {
+        let current = unsafe { tpidr_current() };
+        if current.is_null() {
+            return;
+        }
+        let mut table = TABLE.lock(&node);
+        let id = table
+            .iter()
+            .position(|slot| {
+                matches!(slot, Some(p) if (p as *const Process as *const ()) == (current as *const Process as *const ()))
+            })
+            .unwrap_or_else(|| panic!("block_at: current process not in the table"));
+        if let Some(p) = table[id].as_mut() {
+            p.deadline = Some(deadline);
+        }
+    }
+    block_current();
+}
+
 /// Put `id` back on the ready set: a Blocked process becomes Runnable and is
 /// selectable at the next selection.  A no-op unless `id` is a live Blocked
-/// slot (waking a Running/Runnable/Exited slot is a caller bug).
+/// slot (waking a Running/Runnable/Exited slot is a caller bug).  A bounded
+/// wait's deadline is cleared here: the wake (a message or the tick's
+/// deadline expiry) is what retires it, so the tick's scan never fires on a
+/// deadline the process already left.
 #[cfg(target_os = "none")]
 pub(crate) fn wake(id: ProcessId) {
     let node = LockNode::new();
@@ -1365,6 +1442,7 @@ pub(crate) fn wake(id: ProcessId) {
         && p.state == State::Blocked
     {
         p.state = State::Runnable;
+        p.deadline = None;
     }
 }
 
@@ -1568,6 +1646,8 @@ mod tests {
         assert_eq!(SYS_ALLOC, r9x_abi::SYS_ALLOC);
         assert_eq!(SYS_FREE, r9x_abi::SYS_FREE);
         assert_eq!(SYS_SPAWN, r9x_abi::SYS_SPAWN);
+        assert_eq!(SYS_CLOCK, r9x_abi::SYS_CLOCK);
+        assert_eq!(SYS_RECEIVE_AT, r9x_abi::SYS_RECEIVE_AT);
         // The `SYS_SPAWN` error codes pin too: a valid process id is a table
         // index 0..NPROCS (far below the bound), so the errors sit at or above
         // `SPAWN_ERR_MIN`, distinct from every id.

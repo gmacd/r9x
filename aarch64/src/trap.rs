@@ -343,6 +343,19 @@ fn trap(frame: &mut TrapFrame) {
                     frame.x0 = result;
                     return;
                 }
+                process::SYS_CLOCK => {
+                    let result = ipc::sys_clock(frame.x0);
+                    frame.x0 = result;
+                    return;
+                }
+                process::SYS_RECEIVE_AT => {
+                    let (op, bytes, tag) =
+                        ipc::sys_receive_at(frame.x0, frame.x1 as *mut u8, frame.x2, frame.x3);
+                    frame.x0 = op;
+                    frame.x3 = bytes;
+                    frame.x4 = tag;
+                    return;
+                }
                 // Exit and an unimplemented number both end the
                 // process, with the svc number as status.
                 _ => process::exit_current(syscall),
@@ -387,6 +400,8 @@ fn svc_returns(syscall: u64) -> bool {
             | process::SYS_ALLOC
             | process::SYS_FREE
             | process::SYS_SPAWN
+            | process::SYS_CLOCK
+            | process::SYS_RECEIVE_AT
     )
 }
 
@@ -486,6 +501,8 @@ mod tests {
             process::SYS_ALLOC,
             process::SYS_FREE,
             process::SYS_SPAWN,
+            process::SYS_CLOCK,
+            process::SYS_RECEIVE_AT,
         ] {
             assert!(svc_returns(n), "syscall {n} must return");
         }

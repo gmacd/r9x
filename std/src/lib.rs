@@ -42,3 +42,7 @@ pub mod sys;
 /// caller spawns and `waits` on, not a light-weight context in the caller's
 /// address space).
 pub mod thread;
+/// The clock: the arch's monotonic counter, in ticks.  A `SYS_CLOCK` read and
+/// a `SYS_RECEIVE_AT`-backed wait — the primitives a user-space server needs
+/// to pace itself (the display 60 Hz, a timer-wheel tick) without polling.
+pub mod time;

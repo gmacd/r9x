@@ -285,6 +285,15 @@ fn now() -> u64 {
     CntPctEl0::read().value()
 }
 
+/// The monotonic counter's value (CNTPCT_EL0): the arch's hardware clock, in
+/// ticks.  A register read — no lock, no allocation — so a `SYS_CLOCK`
+/// handler can take it from interrupt- or process-context without touching
+/// the timer table.  The caller converts ticks to a duration with the
+/// counter frequency (CNTFRQ_EL0).
+pub fn counter() -> u64 {
+    now()
+}
+
 /// Convert a duration to hardware ticks.  Reads CNTFRQ_EL0 directly —
 /// firmware programs it before we ever run, so unlike a cached copy
 /// there is no ordering dependency on `init`.

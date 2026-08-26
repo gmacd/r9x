@@ -3,7 +3,7 @@
 //! *pair* — the client sends on the server's inbound channel and receives the
 //! reply on its outbound channel.
 
-use r9x_abi::{SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND};
+use r9x_abi::{SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_RECEIVE_AT};
 
 use crate::sys::sys;
 
@@ -38,6 +38,17 @@ pub fn send(handle: u64, opcode: u16, tag: u32, buf: &[u8]) -> u64 {
 pub fn receive(handle: u64, buf: &mut [u8]) -> (u16, usize, u32) {
     let (op, bytes, tag) =
         unsafe { sys(SYCRECEIVE, handle, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0) };
+    (op as u16, bytes as usize, tag as u32)
+}
+
+/// Receive a message on `handle` into `buf` (at most `buf.len()` bytes),
+/// blocking until one arrives or `deadline` (a counter tick from [`crate::time::now`])
+/// passes.  Returns `(opcode, bytes, tag)`: on a timeout, opcode =
+/// [`RECEIVE_TIMEOUT`](r9x_abi::RECEIVE_TIMEOUT) (bytes = 0, tag = 0).
+pub fn receive_at(handle: u64, buf: &mut [u8], deadline: u64) -> (u16, usize, u32) {
+    let (op, bytes, tag) = unsafe {
+        sys(SYS_RECEIVE_AT, handle, buf.as_mut_ptr() as u64, buf.len() as u64, deadline, 0)
+    };
     (op as u16, bytes as usize, tag as u32)
 }
 

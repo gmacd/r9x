@@ -27,6 +27,7 @@
 // pinning test asserts they match).  The uses below (`[u8; MSG_MAX]`, …) refer
 // to this re-export.
 pub use r9x_abi::MSG_MAX;
+pub use r9x_abi::RECEIVE_TIMEOUT;
 
 /// The bounded, tagged, fixed message.  `opcode` dispatches, `tag` correlates
 /// a reply to its request, `buf`/`len` carry the (opaque) payload.
@@ -92,6 +93,16 @@ pub trait IpcScheduler {
     /// Put `id` back on the ready set (it will be picked by the next
     /// selection).
     fn wake(&self, id: ProcId);
+    /// The arch's monotonic counter, in ticks: the value a bounded wait's
+    /// deadline is measured against.  A register read (no lock, no allocation),
+    /// so `receive_at` can call it from the hot path.
+    fn now(&self) -> u64;
+    /// Put `id` off the ready set with a wake `deadline` (a counter tick):
+    /// the arch records the deadline and blocks; the arch's tick wakes the
+    /// process when the counter reaches the deadline (or a message arrives
+    /// first, which the matching `send` wakes it with).  Does not return until
+    /// `id` is woken and rescheduled.
+    fn block_at(&self, id: ProcId, deadline: u64);
 }
 
 /// The queue depth of a channel: the slots are a fixed array, so a full queue
@@ -394,6 +405,67 @@ pub fn receive<S: IpcScheduler>(sched: &S, ch: &Channel) -> core::result::Result
     }
 }
 
+/// Receive a message from `ch` through `sched`, bounded by `deadline` (a
+/// counter tick, measured against [`IpcScheduler::now`]).  Like [`receive`],
+/// but the wait is bounded: the process is woken when a message arrives or the
+/// counter reaches `deadline`, whichever is first.  On a message, returns it
+/// (the message beat the deadline).  On a deadline with no message, returns a
+/// message carrying [`RECEIVE_TIMEOUT`] as its opcode (the timeout beat the
+/// message); a closed channel still returns [`IpcErr::Closed`].
+///
+/// The wait does not spin: an empty queue with a future deadline puts the
+/// process off the ready set (a bounded `block`); the arch's tick wakes it at
+/// the deadline, and a `send`'s fast path wakes it earlier.  A deadline that
+/// has already passed (a `deadline <= now()`) never blocks: the timeout
+/// returns immediately.
+pub fn receive_at<S: IpcScheduler>(
+    sched: &S,
+    ch: &Channel,
+    deadline: u64,
+) -> core::result::Result<Message, IpcErr> {
+    let node = crate::mcslock::LockNode::new();
+    let timeout = Message { opcode: RECEIVE_TIMEOUT, tag: 0, len: 0, buf: [0; MSG_MAX] };
+    loop {
+        let me = sched.current().expect("receive_at needs a process");
+        let (msg, sendw, blocked) = {
+            let mut inner = ch.inner.lock(&node);
+            if inner.closed {
+                return Err(IpcErr::Closed);
+            }
+            match inner.queue.pop() {
+                Some(m) => (Some(m), inner.send_waiter.take(), false),
+                None => {
+                    // Empty: a message did not beat the deadline.  A deadline
+                    // already reached (or past) is an immediate timeout; a
+                    // future deadline blocks until the deadline or a message.
+                    if sched.now() >= deadline {
+                        return Ok(timeout);
+                    }
+                    // Future: drop any PI boost (as `receive`) and record as
+                    // the receiver.  The deadline is set by the arch when it
+                    // blocks (below); the tick or a `send` clears it on wake.
+                    sched.unboost(me);
+                    inner.recv_waiter = Some(me);
+                    (None, None, true)
+                }
+            }
+        };
+        if let Some(m) = msg {
+            // A slot freed: wake a sender blocked on a full queue, if any.
+            if let Some(s) = sendw {
+                sched.wake(s);
+            }
+            return Ok(m);
+        }
+        if blocked {
+            // The lock is dropped before the switch (a woken receiver's own
+            // receive must not self-deadlock).  Block until a send or the
+            // deadline wakes us.
+            sched.block_at(me, deadline);
+        }
+    }
+}
+
 /// A tag-correlated `send`: the reply to the request with `tag`.  The kernel
 /// is opaque to the protocol and does not track outstanding tags across a
 /// connection (a request and its reply ride different channels of the pair),
@@ -436,6 +508,8 @@ mod tests {
         blocks: RefCell<Vec<ProcId>>,
         boosts: RefCell<Vec<(ProcId, u8)>>,
         unboosts: RefCell<Vec<ProcId>>,
+        /// The mock counter (`now`): a test sets it to drive a deadline.
+        counter: RefCell<u64>,
         channel: Channel,
         #[allow(clippy::type_complexity)]
         on_block: RefCell<Option<Rc<dyn Fn(&Mock)>>>,
@@ -450,9 +524,15 @@ mod tests {
                 blocks: RefCell::new(vec![]),
                 boosts: RefCell::new(vec![]),
                 unboosts: RefCell::new(vec![]),
+                counter: RefCell::new(0),
                 channel,
                 on_block: RefCell::new(None),
             }
+        }
+
+        /// Set the mock counter (a test advances it to pass a deadline).
+        fn set_counter(&self, value: u64) {
+            *self.counter.borrow_mut() = value;
         }
 
         /// Run `body` as process `id` (the current process for its duration).
@@ -493,6 +573,14 @@ mod tests {
         }
         fn wake(&self, id: ProcId) {
             let _ = id; // a woken process is resumed by the test's structure
+        }
+        fn now(&self) -> u64 {
+            *self.counter.borrow()
+        }
+        fn block_at(&self, id: ProcId, _deadline: u64) {
+            // A bounded wait is the same switch as a plain block: the test's
+            // `on_block` action (or the counter) is what wakes the blocker.
+            self.block(id);
         }
     }
 
@@ -712,5 +800,92 @@ mod tests {
             Err(IpcErr::Closed),
             "closed channel: try_send must return Closed"
         );
+    }
+
+    #[test]
+    fn receive_at_deadline_already_passed_is_immediate_timeout() {
+        // A deadline at or before the counter never blocks: the timeout
+        // returns immediately, no block call.
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        m.set_counter(50);
+        m.run(SERVER, |m| {
+            let msg = receive_at(m, &m.channel, 50).unwrap();
+            assert_eq!(msg.opcode, RECEIVE_TIMEOUT, "deadline passed: immediate timeout");
+            assert_eq!(msg.len, 0, "a timeout carries no payload");
+        });
+        assert!(m.blocks.borrow().is_empty(), "a passed deadline must not block");
+    }
+
+    #[test]
+    fn receive_at_timeout_when_deadline_beats_message() {
+        // The block's on_block action advances the counter past the deadline
+        // (simulating the tick): on re-entry there is no message and the
+        // deadline has passed, so the timeout is returned.
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        m.on_block.replace(Some(Rc::new(|m: &Mock| {
+            m.set_counter(200); // past the deadline of 100
+        })));
+        m.run(SERVER, |m| {
+            let msg = receive_at(m, &m.channel, 100).unwrap();
+            assert_eq!(msg.opcode, RECEIVE_TIMEOUT, "deadline beat the message");
+        });
+        assert_eq!(m.blocks.borrow().len(), 1, "the wait must have blocked once");
+    }
+
+    #[test]
+    fn receive_at_message_beats_deadline() {
+        // The block's on_block action sends a message (simulating the fast
+        // path): on re-entry the message is found and returned, even though
+        // the deadline is still in the future.
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        m.on_block.replace(Some(Rc::new(|m: &Mock| {
+            m.run(CLIENT, |m| {
+                send(m, &m.channel, Message::new(1, 7, &[42])).unwrap();
+            });
+        })));
+        m.run(SERVER, |m| {
+            let msg = receive_at(m, &m.channel, 100).unwrap();
+            assert_eq!(msg.opcode, 1, "the message beat the deadline");
+            assert_eq!(msg.tag, 7);
+            assert_eq!(msg.len, 1);
+        });
+    }
+
+    #[test]
+    fn receive_at_spurious_wake_reblocks() {
+        // The block's on_block action does not advance the counter or send a
+        // message (a spurious wake): on re-entry there is no message and the
+        // deadline has not passed, so the process re-blocks.  The test
+        // advances the counter and sends a message from the second on_block
+        // to end the loop.
+        let m = Mock::new(&[128, 128, 128, 128], Channel::new(CLIENT));
+        let calls = Rc::new(RefCell::new(0));
+        let calls2 = calls.clone();
+        m.on_block.replace(Some(Rc::new(move |m: &Mock| {
+            let n = *calls2.borrow();
+            *calls2.borrow_mut() = n + 1;
+            if n == 0 {
+                // First block: spurious wake (no counter advance, no message).
+            } else {
+                // Second block: advance the counter and send a message.
+                m.set_counter(200);
+                m.run(CLIENT, |m| {
+                    send(m, &m.channel, Message::new(1, 9, &[])).unwrap();
+                });
+            }
+        })));
+        m.run(SERVER, |m| {
+            let msg = receive_at(m, &m.channel, 100).unwrap();
+            assert_eq!(msg.opcode, 1, "the message arrived on the second wake");
+            assert_eq!(msg.tag, 9);
+        });
+        assert_eq!(*calls.borrow(), 2, "the first wake was spurious: the process re-blocked");
+    }
+
+    #[test]
+    fn receive_at_timeout_opcode_is_reserved() {
+        // The timeout opcode is the max u16: a protocol that sends a message
+        // with this opcode is ambiguous and must not.
+        assert_eq!(RECEIVE_TIMEOUT, 0xffff);
     }
 }

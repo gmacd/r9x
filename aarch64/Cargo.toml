@@ -125,5 +125,10 @@ name = "system"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "clock"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true

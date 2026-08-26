@@ -23,6 +23,8 @@ pub type ChannelHandle = usize;
 use crate::process::{self, Priority};
 #[cfg(target_os = "none")]
 use port::ipc::{self as ipc, IpcErr, IpcScheduler, MSG_MAX, Message, ProcId};
+#[cfg(target_os = "none")]
+use r9x_abi::RECEIVE_TIMEOUT;
 // The channel table itself is host-testable (a plain `Channel` array and an
 // atomic count; `port::ipc::Channel` carries no target gate), so the host
 // build can unit-test `try_create`/`channel` — the observable of SYCCREATECHAN.
@@ -201,6 +203,15 @@ impl IpcScheduler for KernSched {
     fn wake(&self, id: ProcId) {
         process::wake(id);
     }
+
+    fn now(&self) -> u64 {
+        crate::timer::counter()
+    }
+
+    fn block_at(&self, id: ProcId, deadline: u64) {
+        debug_assert_eq!(process::current_id(), Some(id), "a block is of the current process");
+        process::block_at(deadline);
+    }
 }
 
 /// Read up to `dst.len()` bytes from the user buffer at `src` into `dst`.
@@ -258,6 +269,8 @@ const ERR_BAD_INTID: u64 = 6;
 const ERR_ALREADY_CLAIMED: u64 = 7;
 #[cfg(target_os = "none")]
 const ERR_NO_SLOT: u64 = 8;
+#[cfg(target_os = "none")]
+const ERR_BAD_KIND: u64 = 9;
 
 #[cfg(target_os = "none")]
 fn err_code(e: IpcErr) -> u64 {
@@ -399,6 +412,49 @@ pub(crate) fn sys_createchan() -> u64 {
     }
 }
 
+/// SYSCLOCK: x0 = the clock kind (0 = monotonic; other kinds are a stated
+/// refinement, refused).  On return x0 = the tick count (the arch counter's
+/// value, increasing at the counter frequency).  A register read: no lock, no
+/// allocation, so the hot path stays within the three-thing budget.  The
+/// counter frequency is a hardware constant the user reads separately (EL0
+/// opt-in to `CNTFRQ_EL0`), not a return of this syscall this arc.
+#[cfg(target_os = "none")]
+pub fn sys_clock(kind: u64) -> u64 {
+    if kind != 0 {
+        return ERR_BAD_KIND;
+    }
+    crate::timer::counter()
+}
+
+/// SYSRECEIVEAT: `handle` from channel, `buf`/`cap` the payload destination,
+/// `deadline` the wake deadline (a counter tick).  Returns `(x0, x3, x4)`: on
+/// a message, like `sys_receive` (x0 = opcode, x3 = bytes copied, x4 = tag);
+/// on a timeout, x0 = `RECEIVE_TIMEOUT` (x3/x4 = 0); on a closed channel, x0
+/// = the error code.  The wait is bounded: the process is blocked (off the
+/// ready set) until the deadline or a message, whichever is first — no spin.
+#[cfg(target_os = "none")]
+pub(crate) fn sys_receive_at(
+    handle: u64,
+    buf: *mut u8,
+    cap: u64,
+    deadline: u64,
+) -> (u64, u64, u64) {
+    let Some(ch) = channel(handle as ChannelHandle) else {
+        return (ERR_BAD_HANDLE, 0, 0);
+    };
+    match ipc::receive_at(&KernSched, ch, deadline) {
+        Ok(msg) => {
+            if msg.opcode == RECEIVE_TIMEOUT {
+                // The timeout: the deadline beat the message.  No payload.
+                return (RECEIVE_TIMEOUT as u64, 0, 0);
+            }
+            let n = unsafe { copy_to_user(buf, &msg.buf, (msg.len as usize).min(cap as usize)) };
+            (msg.opcode as u64, n as u64, msg.tag as u64)
+        }
+        Err(e) => (err_code(e), 0, 0),
+    }
+}
+
 /// SYCSEND: `handle` on channel, `buf`/`len` the payload, `opcode`/`tag` the
 /// envelope.  Returns the x0 result code.
 #[cfg(target_os = "none")]
@@ -466,6 +522,21 @@ pub(crate) fn sys_send(_handle: u64, _buf: *const u8, _len: u64, _opcode: u64, _
 
 #[cfg(not(target_os = "none"))]
 pub(crate) fn sys_receive(_handle: u64, _buf: *mut u8, _cap: u64) -> (u64, u64, u64) {
+    (0, 0, 0)
+}
+
+#[cfg(not(target_os = "none"))]
+pub(crate) fn sys_clock(_kind: u64) -> u64 {
+    0
+}
+
+#[cfg(not(target_os = "none"))]
+pub(crate) fn sys_receive_at(
+    _handle: u64,
+    _buf: *mut u8,
+    _cap: u64,
+    _deadline: u64,
+) -> (u64, u64, u64) {
     (0, 0, 0)
 }
 

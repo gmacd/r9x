@@ -115,6 +115,25 @@ pub const SYS_FREE: u64 = 23;
 /// from, not a fault.
 pub const SYS_SPAWN: u64 = 24;
 
+/// Read the arch's monotonic counter.  arg0 = the clock kind (0 = monotonic;
+/// other kinds are a stated refinement, refused until a time source is
+/// agreed).  On return arg0 = the tick count (the counter's value, increasing
+/// at the arch's counter frequency).  A register read: no lock, no
+/// allocation.  The counter frequency is a hardware constant the user reads
+/// separately (EL0 opt-in to `CNTFRQ_EL0`, or a build-time constant).
+pub const SYS_CLOCK: u64 = 25;
+
+/// Receive a message on a channel, bounded by a deadline.  arg0 = channel
+/// handle, arg1 = user buffer pointer, arg2 = buffer capacity, arg3 = the
+/// wake deadline (a counter tick count; the process is woken when the counter
+/// reaches it, or by an arriving message, whichever is first).  On return:
+/// like `SYCRECEIVE` (arg0 = opcode, arg3 = bytes copied, arg4 = tag) when a
+/// message arrives; on timeout arg0 = [`RECEIVE_TIMEOUT`] (arg3/arg4 = 0);
+/// on a closed channel arg0 = the error code.  A timed wait that does not
+/// spin: the process is blocked (off the ready set) until the deadline or a
+/// message, whichever is first.
+pub const SYS_RECEIVE_AT: u64 = 26;
+
 // `SYS_SPAWN` result codes.  A value below `SPAWN_ERR_MIN` is a process id
 // (a table index, 0..NPROCS, and NPROCS is far below the bound); at or above
 // it is one of these errors.  The spawner maps them back to its own errors.
@@ -128,6 +147,12 @@ pub const SPAWN_NO_SLOT: u64 = 129;
 /// The child-state or priority is malformed (too many handles, or the
 /// priority is the idle sentinel or above).
 pub const SPAWN_BAD_STATE: u64 = 130;
+
+/// The message opcode a `SYS_RECEIVE_AT` returns when its deadline passes
+/// before a message arrives: the receive timed out.  A value reserved for the
+/// kernel (the maximum `u16`); a protocol that sends a message with this
+/// opcode is ambiguous with a timeout and must not.
+pub const RECEIVE_TIMEOUT: u16 = 0xffff;
 
 /// The layout of the generalized `HANDLES_VA` page the spawner writes a
 /// child's state into (and the child reads from its first instruction):
