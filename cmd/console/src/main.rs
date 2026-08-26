@@ -77,14 +77,16 @@ fn main() {
     // to and the outbound channel it replies on.
     let (in_h, out_h) = ipc::create_pair();
 
-    // Read the nameserver's pair: the one to send the `BIND` to.  The spawner
-    // handed this process the nameserver's handles, as it hands the nameserver
-    // its own.
-    let (ns_in, ns_out) = rt::handles();
+    // Read the nameserver's inbound channel: the one to send the `BIND` to.
+    // The spawner handed this process the nameserver's handles.
+    let (ns_in, _ns_out) = rt::handles();
 
-    // Build the `BIND` request: `[name][in:4 LE][out:4 LE]`, the nameserver's
-    // envelope — the NUL-free name followed by the server's own pair.
-    let mut req = [0u8; NAME.len() + 8];
+    // Create a reply channel: the nameserver sends the result here, not on its
+    // own outbound (which would be shared by all clients and race).
+    let reply_chan = ipc::create_chan();
+
+    // Build the `BIND` request: `[name][in:4 LE][out:4 LE][reply:4 LE]`.
+    let mut req = [0u8; NAME.len() + 12];
     {
         let n = NAME.len();
         // SAFETY: `req[..n]` and `NAME` are the same length and do not
@@ -96,18 +98,20 @@ fn main() {
             core::ptr::copy_nonoverlapping(ib.as_ptr(), req.as_mut_ptr().add(n), 4);
             let ob = out_h.to_le_bytes();
             core::ptr::copy_nonoverlapping(ob.as_ptr(), req.as_mut_ptr().add(n + 4), 4);
+            let rc = (reply_chan as u32).to_le_bytes();
+            core::ptr::copy_nonoverlapping(rc.as_ptr(), req.as_mut_ptr().add(n + 8), 4);
         };
     }
 
     // Publish: send the `BIND` to the nameserver's inbound channel.
     let _ = ipc::send(ns_in as u64, OP_BIND, 0, &req);
 
-    // Receive the result on the nameserver's outbound channel.  It is `R_OK`
-    // or `R_EFULL`; on a non-`OK` the server still proceeds — binding is the
-    // namespace's concern and the image asserts the bind landed, so a failure
-    // here is reported by the image, not the server.
+    // Receive the result on our own reply channel.  It is `R_OK` or `R_EFULL`;
+    // on a non-`OK` the server still proceeds — binding is the namespace's
+    // concern and the image asserts the bind landed, so a failure here is
+    // reported by the image, not the server.
     let mut reply = [0u8; 8];
-    let (op, _, _) = ipc::receive(ns_out as u64, &mut reply);
+    let (op, _, _) = ipc::receive(reply_chan, &mut reply);
     let _ = (op == R_OK) || (op == R_EFULL);
 
     // One-shot client service: receive a byte on this server's own inbound

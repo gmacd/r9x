@@ -733,6 +733,13 @@ impl QemuStep {
                     cmd.arg("-nographic");
                 }
 
+                // The raspi4b machine: the kernel targets the BCM283x hardware
+                // (PL011, GIC-400, Mailbox, VideoCore).  The generic `virt`
+                // machine lacks the Mailbox (0xFE000000) and the VideoCore
+                // framebuffer, so the display path cannot run on it.
+                cmd.arg("-machine");
+                cmd.arg("raspi4b");
+
                 // The PL011 (UART0, serial_hd(0)) is the early console, so it
                 // lands on the terminal; the mini-UART (UART1, serial_hd(1))
                 // goes to the null sink.

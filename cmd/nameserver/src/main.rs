@@ -59,29 +59,30 @@ fn main() {
     loop {
         let (op, bytes, tag) = ipc::receive(pair.in_h as u64, &mut buf);
         let payload = &buf[..bytes.min(ipc::MSG_MAX)];
-        // Dispatch the verb.  The payload layout is the stated convention the
-        // client mirrors: a request carries the NUL-free `name`; a BIND
-        // carries the name followed by the bound pair (`[in:4 LE][out:4 LE]`),
-        // so the name is the first `len - 8` bytes of a BIND and the whole
-        // payload of a RESOLVE / UNBIND.
+        // Every request carries a `reply_chan` (4 bytes LE) as its last field:
+        // the channel the nameserver sends the reply on.  The client creates
+        // it and receives the reply there, so no two clients share the
+        // nameserver's outbound channel.
+        let reply_chan =
+            u32::from_le_bytes(payload[payload.len() - 4..].try_into().unwrap()) as u64;
+        // Dispatch the verb.  The payload layout: a BIND carries the name
+        // followed by the bound pair and the reply channel
+        // (`[name][in:4][out:4][reply:4]`); a RESOLVE / UNBIND carries the
+        // name and the reply channel (`[name][reply:4]`).
         let (result, found) = match op {
             OP_BIND => {
-                // A well-formed BIND is at least 8 bytes (a zero-length name
-                // plus the pair); the kernel bounds `payload` to `MSG_MAX`, and
-                // a shorter payload is a client bug the arc does not produce —
-                // the slice below is in-bounds for every payload it does.
-                let name_len = payload.len() - 8;
+                let name_len = payload.len() - 12;
                 let name = &payload[..name_len];
                 let in_h = u32::from_le_bytes(payload[name_len..name_len + 4].try_into().unwrap());
                 let out_h =
                     u32::from_le_bytes(payload[name_len + 4..name_len + 8].try_into().unwrap());
                 (table.bind(name, Pair { in_h, out_h }), None)
             }
-            OP_RESOLVE => match table.resolve(payload) {
+            OP_RESOLVE => match table.resolve(&payload[..payload.len() - 4]) {
                 Some(p) => (R_OK, Some(p)),
                 None => (R_ENOENT, None),
             },
-            OP_UNBIND => (table.unbind(payload), None),
+            OP_UNBIND => (table.unbind(&payload[..payload.len() - 4]), None),
             // An unknown verb is answered like an unknown name.
             _ => (R_ENOENT, None),
         };
@@ -104,6 +105,6 @@ fn main() {
             }
             None => &[],
         };
-        ipc::reply(pair.out_h as u64, result, tag, out_slice);
+        ipc::reply(reply_chan, result, tag, out_slice);
     }
 }

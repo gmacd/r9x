@@ -110,15 +110,19 @@ pub extern "C" fn main9(dtb_va: usize) {
     process::run_all();
     println!("servers at fixpoint; resolving /dev/console");
 
-    // RESOLVE: send the name to the nameserver's inbound channel, run the
-    // nameserver (it wakes, looks up the name, replies with the pair),
-    // then read the reply.
-    let resolve_req = Message::new(OP_RESOLVE, 1, NAME);
+    // RESOLVE: send the name + reply channel to the nameserver's inbound
+    // channel, run the nameserver (it wakes, looks up the name, replies on
+    // our reply channel), then read the reply.
+    let reply_ch = ipc::create();
+    let mut resolve_payload = [0u8; NAME.len() + 4];
+    resolve_payload[..NAME.len()].copy_from_slice(NAME);
+    resolve_payload[NAME.len()..].copy_from_slice(&(reply_ch as u32).to_le_bytes());
+    let resolve_req = Message::new(OP_RESOLVE, 1, &resolve_payload);
     let ns_in_ch = ipc::channel(ns_in).expect("ns_in channel exists");
     try_send(&ipc::KernSched, ns_in_ch, resolve_req).expect("resolve send");
     process::run_all();
-    let ns_out_ch = ipc::channel(ns_out).expect("ns_out channel exists");
-    let reply = try_receive(&ipc::KernSched, ns_out_ch)
+    let reply_ch_handle = ipc::channel(reply_ch).expect("reply channel exists");
+    let reply = try_receive(&ipc::KernSched, reply_ch_handle)
         .unwrap_or_else(|e| panic!("namespace: resolve receive failed: {e:?}"));
     check!(
         reply.opcode == R_OK,

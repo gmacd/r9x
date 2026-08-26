@@ -94,24 +94,30 @@ fn flip(back: &[u8]) {
 /// The server body: configure the framebuffer via IPC to the mailbox server,
 /// allocate the back buffer, publish the name, and run the frame loop forever.
 fn main() {
-    // Read the nameserver's channel pair.
-    let (ns_in, ns_out) = rt::handles();
+    // Read the nameserver's inbound channel.
+    let (ns_in, _ns_out) = rt::handles();
     let ns_in = ns_in as u64;
-    let ns_out = ns_out as u64;
 
     // Look up the mailbox server's channel pair in the nameserver.
-    let mut resolve_req = [0u8; MBOX_NAME.len()];
-    // SAFETY: `resolve_req` and `MBOX_NAME` are the same length.
+    // The reply comes on our own channel, not the nameserver's outbound.
+    let reply_chan1 = ipc::create_chan();
+    let mut resolve_req = [0u8; MBOX_NAME.len() + 4];
+    // SAFETY: the name and the 4-byte reply channel are disjoint.
     unsafe {
         core::ptr::copy_nonoverlapping(
             MBOX_NAME.as_ptr(),
             resolve_req.as_mut_ptr(),
             MBOX_NAME.len(),
-        )
-    };
+        );
+        core::ptr::copy_nonoverlapping(
+            (reply_chan1 as u32).to_le_bytes().as_ptr(),
+            resolve_req.as_mut_ptr().add(MBOX_NAME.len()),
+            4,
+        );
+    }
     let _ = ipc::send(ns_in, OP_RESOLVE, 0, &resolve_req);
     let mut resolve_reply = [0u8; 8];
-    let (op, _, _) = ipc::receive(ns_out, &mut resolve_reply);
+    let (op, _, _) = ipc::receive(reply_chan1, &mut resolve_reply);
     if op != R_OK {
         exit(1);
     }
@@ -169,21 +175,25 @@ fn main() {
 
     // Publish the name in the nameserver.
     let (in_h, out_h) = ipc::create_pair();
-    let mut bind_req = [0u8; NAME.len() + 8];
+    let reply_chan2 = ipc::create_chan();
+    let mut bind_req = [0u8; NAME.len() + 12];
     {
         let n = NAME.len();
-        // SAFETY: `bind_req[..n]` and `NAME` are the same length.
+        // SAFETY: the name, the two 4-byte handles, and the reply channel are
+        // all disjoint.
         unsafe {
             core::ptr::copy_nonoverlapping(NAME.as_ptr(), bind_req.as_mut_ptr(), n);
             let ib = in_h.to_le_bytes();
             core::ptr::copy_nonoverlapping(ib.as_ptr(), bind_req.as_mut_ptr().add(n), 4);
             let ob = out_h.to_le_bytes();
             core::ptr::copy_nonoverlapping(ob.as_ptr(), bind_req.as_mut_ptr().add(n + 4), 4);
+            let rc = (reply_chan2 as u32).to_le_bytes();
+            core::ptr::copy_nonoverlapping(rc.as_ptr(), bind_req.as_mut_ptr().add(n + 8), 4);
         };
     }
     let _ = ipc::send(ns_in, OP_BIND, 0, &bind_req);
     let mut bind_reply = [0u8; 8];
-    let (op, _, _) = ipc::receive(ns_out, &mut bind_reply);
+    let (op, _, _) = ipc::receive(reply_chan2, &mut bind_reply);
     let _ = op == R_OK;
 
     // The frame loop: prepare the frame, flip, wait for the deadline, repeat.

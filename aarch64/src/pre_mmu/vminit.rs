@@ -307,9 +307,9 @@ pub extern "C" fn init_vm(dtb_pa: u64) {
 
     // Preset memory attributes.  This register stores 8 8-bit presets that are
     // referenced by index in the page table entries:
-    //  [0] 0xff - Normal
-    //  [1] 0x00 - Device (Non-gathering, non-reordering, no early write acknowledgement (most restrictive))
-    MAIR_EL1.set(0x00ff);
+    //  [0] 0xff - Normal Write-Back Write-Allocate
+    //  [1] 0x04 - Device nGnRnE (non-gathering, non-reordering, no early ack)
+    MAIR_EL1.set(0x04ff);
 
     // https://forum.osdev.org/viewtopic.php?t=36412&p=303237
     #[cfg(target_os = "none")]
