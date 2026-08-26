@@ -61,6 +61,11 @@ harness = false
 required-features = ["qemu-test"]
 
 [[test]]
+name = "sched"
+harness = false
+required-features = ["qemu-test"]
+
+[[test]]
 name = "timers"
 harness = false
 required-features = ["qemu-test"]

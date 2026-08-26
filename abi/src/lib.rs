@@ -164,6 +164,16 @@ pub const SYS_KILL: u64 = 29;
 /// The `SYS_KILL` bad-id error (returned in x0).
 pub const KILL_BAD_ID: u64 = 1;
 
+/// Set a process's priority: x0 = target id ([`u64::MAX`] = self), x1 =
+/// priority (0 = most urgent, 255 = idle sentinel, refused).  Returns x0 = 0
+/// on success, [`SETPRIO_BAD_ID`] if the id is not a live process,
+/// [`SETPRIO_BAD_PRIO`] if the priority is the idle sentinel.
+pub const SYS_SETPRIO: u64 = 30;
+/// The `SYS_SETPRIO` bad-id error.
+pub const SETPRIO_BAD_ID: u64 = 1;
+/// The `SYS_SETPRIO` bad-priority error (the idle sentinel).
+pub const SETPRIO_BAD_PRIO: u64 = 2;
+
 // `SYS_SPAWN` result codes.  A value below `SPAWN_ERR_MIN` is a process id
 // (a table index, 0..NPROCS, and NPROCS is far below the bound); at or above
 // it is one of these errors.  The spawner maps them back to its own errors.

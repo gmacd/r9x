@@ -373,6 +373,11 @@ fn trap(frame: &mut TrapFrame) {
                     frame.x0 = result;
                     return;
                 }
+                process::SYS_SETPRIO => {
+                    let result = process::sys_setprio(frame.x0, frame.x1);
+                    frame.x0 = result;
+                    return;
+                }
                 // Exit and an unimplemented number both end the
                 // process, with the svc number as status.
                 _ => process::exit_current(syscall),
@@ -422,6 +427,7 @@ fn svc_returns(syscall: u64) -> bool {
             | process::SYS_ALLOC_PAGE
             | process::SYS_WAIT
             | process::SYS_KILL
+            | process::SYS_SETPRIO
     )
 }
 
@@ -526,6 +532,7 @@ mod tests {
             process::SYS_ALLOC_PAGE,
             process::SYS_WAIT,
             process::SYS_KILL,
+            process::SYS_SETPRIO,
         ] {
             assert!(svc_returns(n), "syscall {n} must return");
         }

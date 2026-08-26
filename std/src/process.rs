@@ -2,8 +2,8 @@
 //! another.
 
 use r9x_abi::{
-    KILL_BAD_ID, SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_NO_SLOT, SYS_KILL,
-    SYS_SPAWN, SYS_WAIT, SYSEXIT, SYSYIELD, WAIT_BAD_ID, WAIT_TIMEOUT,
+    KILL_BAD_ID, SETPRIO_BAD_PRIO, SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_NO_SLOT,
+    SYS_KILL, SYS_SETPRIO, SYS_SPAWN, SYS_WAIT, SYSEXIT, SYSYIELD, WAIT_BAD_ID, WAIT_TIMEOUT,
 };
 
 use crate::sys::sys;
@@ -133,4 +133,51 @@ pub enum WaitError {
 pub enum KillError {
     /// The target id is not a live or zombie process.
     BadId,
+}
+
+/// A process's priority: 0 is most urgent, 254 is the least urgent
+/// schedulable level (255 is the idle sentinel, not a settable priority).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
+pub struct Priority(u8);
+
+impl Priority {
+    /// Most urgent (level 0).
+    pub const MIN: Priority = Priority(0);
+    /// Least urgent schedulable level (254).
+    pub const MAX: Priority = Priority(254);
+    /// The idle sentinel (not settable; a process at this level is never
+    /// scheduled).
+    pub const IDLE: Priority = Priority(255);
+
+    /// Create a priority from a level (0-254; 255 is the idle sentinel and
+    /// is refused by `set_priority`).
+    pub const fn new(level: u8) -> Priority {
+        Priority(level)
+    }
+
+    /// The numeric level.
+    pub const fn level(self) -> u8 {
+        self.0
+    }
+}
+
+/// An error from [`set_priority`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SetPrioError {
+    /// The target id is not a live process.
+    BadId,
+    /// The priority is the idle sentinel (255).
+    BadPrio,
+}
+
+/// Set a process's priority.  `target` 0 means self.  Returns `Ok(())` on
+/// success, `Err(BadId)` if the target is not live, `Err(BadPrio)` if the
+/// priority is the idle sentinel.
+pub fn set_priority(target: u64, prio: Priority) -> Result<(), SetPrioError> {
+    let result = unsafe { sys(SYS_SETPRIO, target, prio.level() as u64, 0, 0, 0) };
+    match result.0 {
+        0 => Ok(()),
+        SETPRIO_BAD_PRIO => Err(SetPrioError::BadPrio),
+        _ => Err(SetPrioError::BadId),
+    }
 }

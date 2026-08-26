@@ -55,10 +55,10 @@ use port::{iprintln, mem};
 // (the number in x8, arguments in x0-x4) is spelled where the trap frame is
 // laid out.
 pub use r9x_abi::{
-    SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_MAX_HANDLES, SPAWN_NO_SLOT,
-    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_ALLOC_PAGE, SYS_CLOCK, SYS_FREE,
-    SYS_KILL, SYS_RECEIVE_AT, SYS_SPAWN, SYS_WAIT, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
-    WAIT_BAD_ID, WAIT_TIMEOUT,
+    SETPRIO_BAD_ID, SETPRIO_BAD_PRIO, SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN,
+    SPAWN_MAX_HANDLES, SPAWN_NO_SLOT, SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC,
+    SYS_ALLOC_PAGE, SYS_CLOCK, SYS_FREE, SYS_KILL, SYS_RECEIVE_AT, SYS_SETPRIO, SYS_SPAWN,
+    SYS_WAIT, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD, WAIT_BAD_ID, WAIT_TIMEOUT,
 };
 
 /// The exit status a faulted process is marked with: distinct from a clean
@@ -1722,9 +1722,58 @@ pub fn sys_kill(pid: u64) -> u64 {
     }
 }
 
+/// Set a process's priority: x0 = target id (u64::MAX = self), x1 = priority
+/// (0 = most urgent, 255 = idle sentinel, refused).  Returns 0 on success,
+/// SETPRIO_BAD_ID if the id is not a live process, SETPRIO_BAD_PRIO if the
+/// priority is the idle sentinel.
+#[cfg(target_os = "none")]
+pub fn sys_setprio(target_id: u64, prio: u64) -> u64 {
+    if prio == 255 {
+        return SETPRIO_BAD_PRIO;
+    }
+    let id = if target_id == u64::MAX {
+        // u64::MAX = self: the current process.
+        let current = unsafe { tpidr_current() };
+        if current.is_null() {
+            return SETPRIO_BAD_ID;
+        }
+        let node = LockNode::new();
+        let table = TABLE.lock(&node);
+        table
+            .iter()
+            .position(|slot| {
+                matches!(slot, Some(p) if (p as *const Process as *const ()) == (current as *const Process as *const ()))
+            })
+            .unwrap_or(0) as u64
+    } else {
+        target_id
+    };
+    let id = id as usize;
+    if id >= NPROCS {
+        return SETPRIO_BAD_ID;
+    }
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    match table.get_mut(id) {
+        Some(Some(p)) => {
+            p.prio.base = Priority::new(prio as u8);
+            if !p.prio.is_boosted() {
+                p.prio.effective = Priority::new(prio as u8);
+            }
+            0
+        }
+        _ => SETPRIO_BAD_ID,
+    }
+}
+
 /// The exit status assigned by `SYS_KILL`.
 #[cfg(target_os = "none")]
 pub const KILL_STATUS: u64 = 0x7f;
+
+#[cfg(not(target_os = "none"))]
+pub fn sys_setprio(_target_id: u64, _prio: u64) -> u64 {
+    SETPRIO_BAD_ID
+}
 
 #[cfg(not(target_os = "none"))]
 pub(crate) fn irq_resched() {}
