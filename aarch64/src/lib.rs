@@ -32,6 +32,7 @@ pub mod registers;
 pub mod registry;
 pub mod runtime;
 pub mod swtch;
+pub mod system;
 pub mod timer;
 pub mod trap;
 pub mod uartmini;

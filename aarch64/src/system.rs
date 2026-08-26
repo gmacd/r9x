@@ -1,0 +1,54 @@
+//! The system bringup: the set of processes the full system runs, and how
+//! they are spawned.  Extracted from the kernel binary's `main9` so that the
+//! kernel image *and* the `system` integration test call the **same** function —
+//! they cannot drift apart the way the two diverged when init came to require a
+//! channel pair (the kernel still passed `handles: None`).
+//!
+//! This is the "spawn the servers" part of the boot: register the image
+//! registry, create the channel pairs, and spawn the nameserver, the console,
+//! and init.  The caller does the rest — `set_console_live` (kernel only),
+//! `run_all`, and its own tail (the idle loop, or the test's check).
+
+use crate::{ipc, process, registry};
+
+// The user-space server ELFs, staged into OUT_DIR by build.rs.
+static CONSOLE_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/console.elf"));
+static NAMESERVER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nameserver.elf"));
+static INIT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.elf"));
+static CHILD_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/child.elf"));
+
+// The registry entry for the child: `static` so it outlives the `register`
+// borrow (the registry holds `&'static` entries).
+static CHILD_EMBEDDED: registry::EmbeddedElf =
+    registry::EmbeddedElf { bytes: CHILD_ELF, name: "child" };
+
+/// Spawn the full system: the nameserver, the console, and init (the process
+/// manager, which `SYS_SPAWN`s the child by index).
+///
+/// The nameserver must be up before the console server's BIND is processed.
+/// This holds by construction: the nameserver is spawned first and blocks on
+/// its first receive; the console server's BIND send wakes it (the IPC fast
+/// path); the nameserver processes the BIND before the console server blocks
+/// on its post-bind receive.
+pub fn bringup() {
+    // Register the image registry: init (the process manager) spawns the
+    // child by index, so the child must be registered before init runs.
+    // index 0 is the child; the nameserver and console are the init-context
+    // spawn (not registry entries — they are hard-started by the kernel, not
+    // launched by init).
+    registry::register(&[&CHILD_EMBEDDED]);
+
+    let ns_in = ipc::create();
+    let ns_out = ipc::create();
+    let ns_handles = process::Handles { inbound: ns_in as u32, outbound: ns_out as u32 };
+    // init's own pair: the process manager reads its child-state (the
+    // generalized `HANDLES_VA` header) before it can spawn, so it needs a
+    // real pair — a zero page would be `n_handles == 0`, not a pair.
+    let init_in = ipc::create();
+    let init_out = ipc::create();
+    let init_handles = process::Handles { inbound: init_in as u32, outbound: init_out as u32 };
+
+    process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
+    process::spawn(&process::Image::Elf { bytes: CONSOLE_ELF, handles: Some(ns_handles) });
+    process::spawn(&process::Image::Elf { bytes: INIT_ELF, handles: Some(init_handles) });
+}
