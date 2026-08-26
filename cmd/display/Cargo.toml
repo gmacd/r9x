@@ -1,0 +1,23 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "display"
+version = "0.1.0"
+edition = "2024"
+default-target = "aarch64-unknown-none"
+
+# The display server: the first user-space process that owns a frame buffer
+# and paces its frame loop.  Aarch64-only for the arc (the per-process
+# Aspace the loader needs has only landed for aarch64).  Built by `cargo
+# xtask` (ServerStep), not by a bare `cargo build`.
+#
+# Links `r9x_std`: the syscall core, the runtime entry, the heap, the
+# clock, and the IPC.  The server owns the frame buffer (a software
+# buffer in its own heap) and paces itself with `SYS_RECEIVE_AT` (a
+# timer deadline, no spin).  The kernel never touches the frame buffer.
+
+[dependencies]
+r9x-std = { path = "../../std" }
+
+[lints]
+workspace = true
