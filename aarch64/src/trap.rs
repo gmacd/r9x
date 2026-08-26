@@ -275,6 +275,10 @@ fn trap(frame: &mut TrapFrame) {
         // immediate for EC 0x15 (Arm ARM DDI 0487) and is not used.
         Ok(ExceptionClass::SvcAarch64) => {
             let syscall = frame.x8;
+            #[cfg(feature = "systrace")]
+            let proc_id = process::current_id().unwrap_or(0xffff);
+            #[cfg(feature = "systrace")]
+            crate::trace::syscall(proc_id, syscall, frame.x0, frame.x1, frame.x2, 0);
             match syscall {
                 process::SYSYIELD => {
                     // Yield: the return is the whole handler; the vector's
@@ -292,6 +296,8 @@ fn trap(frame: &mut TrapFrame) {
                         frame.x4,
                     );
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYCRECEIVE => {
@@ -300,6 +306,8 @@ fn trap(frame: &mut TrapFrame) {
                     frame.x0 = op;
                     frame.x3 = bytes;
                     frame.x4 = tag;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, op, bytes, tag);
                     return;
                 }
                 process::SYCREPLY => {
@@ -311,41 +319,57 @@ fn trap(frame: &mut TrapFrame) {
                         frame.x4,
                     );
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYSIRQCLAIM => {
                     let result = ipc::sys_irq_claim(frame.x0, frame.x1);
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYSMAPMMIO => {
                     let result = ipc::sys_map_mmio(frame.x0, frame.x1, frame.x2);
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYCCREATECHAN => {
                     let result = ipc::sys_createchan();
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYS_ALLOC => {
                     let result = ipc::sys_alloc(frame.x0);
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYS_FREE => {
                     let result = ipc::sys_free(frame.x0);
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYS_SPAWN => {
                     let result = process::sys_spawn(frame.x0, frame.x1, frame.x2);
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYS_CLOCK => {
                     let result = ipc::sys_clock(frame.x0);
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYS_RECEIVE_AT => {
@@ -354,28 +378,38 @@ fn trap(frame: &mut TrapFrame) {
                     frame.x0 = op;
                     frame.x3 = bytes;
                     frame.x4 = tag;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, op, bytes, tag);
                     return;
                 }
                 process::SYS_ALLOC_PAGE => {
                     let (va, pa) = ipc::sys_alloc_page();
                     frame.x0 = va;
                     frame.x1 = pa;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, va, pa, 0);
                     return;
                 }
                 process::SYS_WAIT => {
                     let (id, status) = process::sys_wait(frame.x0, frame.x1);
                     frame.x0 = id;
                     frame.x1 = status;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, id, status, 0);
                     return;
                 }
                 process::SYS_KILL => {
                     let result = process::sys_kill(frame.x0);
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 process::SYS_SETPRIO => {
                     let result = process::sys_setprio(frame.x0, frame.x1);
                     frame.x0 = result;
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
                 // Exit and an unimplemented number both end the

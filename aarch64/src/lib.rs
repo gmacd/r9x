@@ -35,6 +35,8 @@ pub mod runtime;
 pub mod swtch;
 pub mod system;
 pub mod timer;
+#[cfg(feature = "systrace")]
+pub mod trace;
 pub mod trap;
 pub mod uartmini;
 pub mod uartpl011;

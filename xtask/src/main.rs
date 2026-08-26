@@ -314,6 +314,7 @@ fn main() {
                     .default_value("15"),
                 clap::arg!(--image <name> "Build and run one of the arch's QEMU test images instead of the kernel")
                     .value_parser(clap::builder::NonEmptyStringValueParser::new()),
+                clap::arg!(--systrace "Enable the kernel syscall trace (aarch64 only)"),
             ]),
         )
         .subcommand(clap::Command::new("clean").about("Cargo clean"))
@@ -567,6 +568,7 @@ struct QemuStep {
     verbose: bool,
     timeout_secs: u64,
     image: String,
+    systrace: bool,
 }
 
 impl QemuStep {
@@ -585,8 +587,20 @@ impl QemuStep {
         let verbose = verbose(matches);
         let timeout_secs = *matches.get_one::<u64>("timeout").expect("timeout has a default");
         let image = matches.get_one::<String>("image").cloned().unwrap_or_default();
+        let systrace = matches.get_flag("systrace");
 
-        Self { arch, config, profile, wait_for_gdb, kvm, dump_dtb, verbose, timeout_secs, image }
+        Self {
+            arch,
+            config,
+            profile,
+            wait_for_gdb,
+            kvm,
+            dump_dtb,
+            verbose,
+            timeout_secs,
+            image,
+            systrace,
+        }
     }
 
     /// Spawn QEMU with the console attached and wait for it to exit on
@@ -643,6 +657,7 @@ impl QemuStep {
                 profile: self.profile,
                 timeout: Duration::from_secs(self.timeout_secs),
                 verbose: self.verbose,
+                systrace: self.systrace,
             };
             let elf = runner.compile(&self.image)?;
             Some(runner.image(&self.image, &elf)?)
@@ -1398,6 +1413,7 @@ impl IntegrationTestStep {
                 profile: self.profile,
                 timeout: self.timeout,
                 verbose: self.verbose,
+                systrace: false,
             };
 
             // Phase 1: compile all test images (serial — cargo's build lock
@@ -1568,6 +1584,7 @@ struct ArchIntegrationTests {
     profile: Profile,
     timeout: Duration,
     verbose: bool,
+    systrace: bool,
 }
 
 impl ArchIntegrationTests {
@@ -1592,7 +1609,11 @@ impl ArchIntegrationTests {
         cmd.current_dir(workspace());
         cmd.arg("--package").arg(self.package());
         cmd.arg("--test").arg(name);
-        cmd.arg("--features").arg(QEMU_TEST_FEATURE);
+        if self.systrace && self.arch == Arch::Aarch64 {
+            cmd.arg("--features").arg(format!("{QEMU_TEST_FEATURE},systrace"));
+        } else {
+            cmd.arg("--features").arg(QEMU_TEST_FEATURE);
+        }
         if self.profile == Profile::Release {
             cmd.arg("--release");
         }
