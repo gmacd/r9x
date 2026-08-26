@@ -45,6 +45,12 @@ const R_OK: u16 = 0;
 /// The mailbox server's IPC protocol.
 const OP_CONFIGURE_FB: u16 = 0;
 
+/// The nameserver's RESOLVE opcode.
+const OP_RESOLVE: u16 = 1;
+
+/// The name of the mailbox server in the nameserver.
+const MBOX_NAME: &[u8] = b"/dev/mailbox";
+
 /// The name the server publishes under.
 const NAME: &[u8] = b"/dev/display";
 
@@ -88,10 +94,39 @@ fn flip(back: &[u8]) {
 /// The server body: configure the framebuffer via IPC to the mailbox server,
 /// allocate the back buffer, publish the name, and run the frame loop forever.
 fn main() {
-    // Read the nameserver's and mailbox server's channel pairs.
+    // Read the nameserver's channel pair.
     let (ns_in, ns_out) = rt::handles();
-    let mbox_in = rt::handle_at(2);
-    let mbox_out = rt::handle_at(3);
+    let ns_in = ns_in as u64;
+    let ns_out = ns_out as u64;
+
+    // Look up the mailbox server's channel pair in the nameserver.
+    let mut resolve_req = [0u8; MBOX_NAME.len()];
+    // SAFETY: `resolve_req` and `MBOX_NAME` are the same length.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            MBOX_NAME.as_ptr(),
+            resolve_req.as_mut_ptr(),
+            MBOX_NAME.len(),
+        )
+    };
+    let _ = ipc::send(ns_in, OP_RESOLVE, 0, &resolve_req);
+    let mut resolve_reply = [0u8; 8];
+    let (op, _, _) = ipc::receive(ns_out, &mut resolve_reply);
+    if op != R_OK {
+        exit(1);
+    }
+    let mbox_in = u32::from_le_bytes([
+        resolve_reply[0],
+        resolve_reply[1],
+        resolve_reply[2],
+        resolve_reply[3],
+    ]);
+    let mbox_out = u32::from_le_bytes([
+        resolve_reply[4],
+        resolve_reply[5],
+        resolve_reply[6],
+        resolve_reply[7],
+    ]);
 
     // Configure the framebuffer via IPC to the mailbox server.
     let mut req = [0u8; 14];
@@ -103,16 +138,22 @@ fn main() {
 
     // Receive the reply: [status:1][phys_lo:4][phys_hi:4][size_lo:4][size_hi:4]
     let mut reply = [0u8; 24];
-    let (_, _, _) = ipc::receive(mbox_out as u64, &mut reply);
-    if reply[0] != 0 {
+    let (op, _, _) = ipc::receive(mbox_out as u64, &mut reply);
+    if op != R_OK || reply[0] != 0 {
         exit(1);
     }
     let phys_lo = u32::from_le_bytes([reply[1], reply[2], reply[3], reply[4]]);
     let phys_hi = u32::from_le_bytes([reply[5], reply[6], reply[7], reply[8]]);
     let phys = (phys_hi as u64) << 32 | phys_lo as u64;
+    if phys == 0 {
+        exit(2);
+    }
 
     // Map the framebuffer into this process's page table at FB_VA.
-    let _ = mem::map_mmio(phys, FB_VA as u64);
+    let map_result = mem::map_mmio(phys, FB_VA as u64, FB_SIZE as u64);
+    if map_result != 0 {
+        exit(3);
+    }
 
     // Allocate the back buffer in this process's heap (cached Normal memory).
     let mut back: Vec<u8> = vec![0u8; FB_SIZE];
@@ -138,9 +179,9 @@ fn main() {
             core::ptr::copy_nonoverlapping(ob.as_ptr(), bind_req.as_mut_ptr().add(n + 4), 4);
         };
     }
-    let _ = ipc::send(ns_in as u64, OP_BIND, 0, &bind_req);
+    let _ = ipc::send(ns_in, OP_BIND, 0, &bind_req);
     let mut bind_reply = [0u8; 8];
-    let (op, _, _) = ipc::receive(ns_out as u64, &mut bind_reply);
+    let (op, _, _) = ipc::receive(ns_out, &mut bind_reply);
     let _ = op == R_OK;
 
     // The frame loop: prepare the frame, flip, wait for the deadline, repeat.

@@ -7,11 +7,15 @@ use r9x_std::mem;
 use r9x_std::process::exit;
 use r9x_std::rt;
 
-const MBOX_PHYS: u64 = 0xfe00_00b8;
+/// The page-aligned base of the Mailbox register page.  The Mailbox
+/// registers start at offset 0xB8 within this page.
+const MBOX_PAGE_PHYS: u64 = 0xfe00_0000;
+/// The Mailbox registers' offset within the mapped page (0xB8 / 4 = 29 words).
+const MBOX_REG_BASE: usize = 0xB8 / 4;
 const MBOX_VA: u64 = 0x7000_0000;
-const MBOX_STATUS: usize = 6;
-const MBOX_WRITE: usize = 8;
-const MBOX_READ: usize = 0;
+const MBOX_STATUS: usize = MBOX_REG_BASE + 6;
+const MBOX_WRITE: usize = MBOX_REG_BASE + 8;
+const MBOX_READ: usize = MBOX_REG_BASE;
 const MBOX_FULL: u32 = 0x8000_0000;
 const MBOX_EMPTY: u32 = 0x4000_0000;
 const CHANNEL_ARM_TO_VC: u32 = 8;
@@ -91,7 +95,11 @@ fn configure_framebuffer(
         core::ptr::write_volatile(base.add(14), 0);
         core::ptr::write_volatile(base.add(15), 0);
         mbox_request(buf_pa);
-        core::ptr::write_bytes(base, 0, 8);
+        // Clear the whole buffer before the second request: the ALLOCATE
+        // tag's value fields (words 5-6) must be zeroed or the firmware sees
+        // the previous response's bytes as a non-zero address and skips the
+        // allocation.
+        core::ptr::write_bytes(base, 0, 32);
         core::ptr::write_volatile(base.add(0), 32);
         core::ptr::write_volatile(base.add(1), 0);
         core::ptr::write_volatile(base.add(2), TAG_FB_ALLOCATE);
@@ -121,13 +129,25 @@ fn get_property(buf_va: usize, buf_pa: u64, tag_id: u32) -> u32 {
 }
 
 fn main() {
-    let _ = mem::map_mmio(MBOX_PHYS, MBOX_VA);
+    let m = mem::map_mmio(MBOX_PAGE_PHYS, MBOX_VA, 4096);
+    if m != 0 {
+        exit(10);
+    }
     let (buf_va, buf_pa) = match mem::alloc_page() {
         Some((va, pa)) => (va, pa),
         None => exit(1),
     };
     let (in_h, out_h) = ipc::create_pair();
-    let (ns_in, ns_out) = rt::handles();
+    if in_h > 15 {
+        exit(11);
+    } // ERR_NO_SLOT is > 15
+    // The nameserver's handles are passed in the extra fields (the kernel-created
+    // pair in `inbound`/`outbound` is unused — the server makes its own pair).
+    let ns_in = rt::handle_at(2) as u64;
+    let ns_out = rt::handle_at(3) as u64;
+    if ns_in > 15 && ns_out > 15 {
+        exit(12);
+    }
     let mut req = [0u8; NAME.len() + 8];
     unsafe {
         core::ptr::copy_nonoverlapping(NAME.as_ptr(), req.as_mut_ptr(), NAME.len());
@@ -142,9 +162,9 @@ fn main() {
             4,
         );
     };
-    let _ = ipc::send(ns_in as u64, OP_BIND, 0, &req);
+    let _ = ipc::send(ns_in, OP_BIND, 0, &req);
     let mut reply = [0u8; 8];
-    let _ = ipc::receive(ns_out as u64, &mut reply);
+    let _ = ipc::receive(ns_out, &mut reply);
     loop {
         let mut req_buf = [0u8; 64];
         let (_, bytes, tag) = ipc::receive(in_h, &mut req_buf);

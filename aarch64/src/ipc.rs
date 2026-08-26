@@ -352,29 +352,36 @@ pub fn sys_irq_claim(intid: u64, handle: u64) -> u64 {
 /// error).  The kernel is device-dumb: it provides the capability, the
 /// server decides which MMIO to map (the QNX model).
 #[cfg(target_os = "none")]
-pub(crate) fn sys_map_mmio(pa: u64, va: u64) -> u64 {
+pub(crate) fn sys_map_mmio(pa: u64, va: u64, size: u64) -> u64 {
     const PAGE: usize = port::mem::PAGE_SIZE_4K;
+    #[cfg(target_os = "none")]
     if !(pa as usize).is_multiple_of(PAGE) {
+        return 1;
+    }
+    if size == 0 {
         return 1;
     }
     let Some(aspace) = process::current_aspace() else {
         return 1;
     };
-    let range = port::mem::PhysRange::with_pa_len(port::mem::PhysAddr::new(pa), PAGE);
-    match aspace.map_mmio(&range, va as usize) {
-        Ok(()) => {
-            // The mapping is live in the page table but the process's TLB
-            // may hold a stale entry (or a translation fault for this VA
-            // from before the mapping).  Invalidate the user TLB so the
-            // process's first access to the new mapping takes the fresh
-            // walk.
-            unsafe {
-                core::arch::asm!("tlbi vmalle1is", "dsb ish", "isb", options(nomem, nostack),);
-            }
-            0
+    // Map each 4 KiB page in the range.
+    let mut offset: u64 = 0;
+    while offset < size {
+        let page_pa = pa + offset;
+        let page_va = va + offset;
+        let range = port::mem::PhysRange::with_pa_len(port::mem::PhysAddr::new(page_pa), PAGE);
+        if aspace.map_mmio(&range, page_va as usize).is_err() {
+            return 1;
         }
-        Err(_) => 1,
+        offset += PAGE as u64;
     }
+    // The mapping is live in the page table but the process's TLB may hold
+    // a stale entry.  Invalidate the user TLB so the process's first access
+    // to the new mapping takes the fresh walk.
+    unsafe {
+        core::arch::asm!("tlbi vmalle1is", "dsb ish", "isb", options(nomem, nostack),);
+    }
+    0
 }
 
 /// SYSALLOC: x0 = byte count.  Grows the current process's heap (page-
@@ -519,6 +526,7 @@ pub(crate) fn sys_reply(handle: u64, buf: *const u8, len: u64, opcode: u64, tag:
     let n = (len as usize).min(MSG_MAX);
     let mut data = [0u8; MSG_MAX];
     unsafe { copy_from_user(&mut data, buf, n) };
+
     let msg = Message::new(opcode as u16, tag as u32, &data[..n]);
     match ipc::reply(&KernSched, ch, tag as u32, msg) {
         Ok(()) => OK,
@@ -571,7 +579,7 @@ pub(crate) fn sys_irq_claim(_intid: u64, _handle: u64) -> u64 {
 }
 
 #[cfg(not(target_os = "none"))]
-pub(crate) fn sys_map_mmio(_pa: u64, _va: u64) -> u64 {
+pub(crate) fn sys_map_mmio(_pa: u64, _va: u64, _size: u64) -> u64 {
     0
 }
 

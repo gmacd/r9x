@@ -62,18 +62,17 @@ pub fn bringup() -> (process::Handles, process::Handles) {
 
     // The mailbox server: owns the BCM283x Mailbox property interface.  It
     // must be up before the display server (the display server sends it a
-    // framebuffer config request during init).
-    let mbox_in = ipc::create();
-    let mbox_out = ipc::create();
+    // framebuffer config request during init).  The nameserver's handles go in
+    // the extra fields (the server makes its own channel pair for serving).
     let mbox_handles = process::Handles {
-        inbound: mbox_in as u32,
-        outbound: mbox_out as u32,
-        extra_inbound: 0,
-        extra_outbound: 0,
+        inbound: 0,
+        outbound: 0,
+        extra_inbound: ns_in as u32,
+        extra_outbound: ns_out as u32,
     };
 
     process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
-    process::spawn(&process::Image::Elf { bytes: MAILBOX_ELF, handles: Some(ns_handles) });
+    process::spawn(&process::Image::Elf { bytes: MAILBOX_ELF, handles: Some(mbox_handles) });
     process::spawn(&process::Image::Elf { bytes: CONSOLE_ELF, handles: Some(ns_handles) });
     process::spawn(&process::Image::Elf { bytes: INIT_ELF, handles: Some(init_handles) });
     (ns_handles, mbox_handles)
@@ -84,12 +83,12 @@ pub fn bringup() -> (process::Handles, process::Handles) {
 /// be up before the BIND is processed).  The display server runs forever
 /// (the frame loop), so it is not in `bringup()` — `run_all` in the `system`
 /// image would never return.
-pub fn spawn_display(ns_handles: process::Handles, mbox_handles: process::Handles) {
+pub fn spawn_display(ns_handles: process::Handles) {
     let display_handles = process::Handles {
         inbound: ns_handles.inbound,
         outbound: ns_handles.outbound,
-        extra_inbound: mbox_handles.inbound,
-        extra_outbound: mbox_handles.outbound,
+        extra_inbound: 0,
+        extra_outbound: 0,
     };
     process::spawn(&process::Image::Elf { bytes: DISPLAY_ELF, handles: Some(display_handles) });
 }

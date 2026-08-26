@@ -30,8 +30,8 @@ fn pages_for(size: usize) -> usize {
 /// kernel maps one 4 KiB Device page; the caller knows the register layout.
 /// Returns the kernel's result (an error code on failure — an access to an
 /// unmapped page is a fault the kernel's EL0 path handles).
-pub fn map_mmio(phys: u64, va: u64) -> u64 {
-    unsafe { sys(SYSMAPMMIO, phys, va, 0, 0, 0).0 }
+pub fn map_mmio(phys: u64, va: u64, size: u64) -> u64 {
+    unsafe { sys(SYSMAPMMIO, phys, va, size, 0, 0).0 }
 }
 
 /// Allocate a page in this process's heap and return both the virtual and

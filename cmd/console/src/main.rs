@@ -66,7 +66,7 @@ unsafe fn trace(dr: *mut u32, b: u8) {
 fn main() {
     // If the map fails, the write below faults and the kernel's EL0 fault path
     // kills this process — the failure policy — so the result is not checked.
-    let _ = map_mmio(PL011_PHYS, MMIO_VA);
+    let _ = map_mmio(PL011_PHYS, MMIO_VA, 4096);
     let dr = MMIO_VA as *mut u32;
     // SAFETY: `dr` is the PL011 data register, mapped by `map_mmio` above as a
     // Device-memory page; a 32-bit volatile write is the register access the

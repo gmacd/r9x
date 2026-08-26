@@ -319,7 +319,7 @@ fn trap(frame: &mut TrapFrame) {
                     return;
                 }
                 process::SYSMAPMMIO => {
-                    let result = ipc::sys_map_mmio(frame.x0, frame.x1);
+                    let result = ipc::sys_map_mmio(frame.x0, frame.x1, frame.x2);
                     frame.x0 = result;
                     return;
                 }

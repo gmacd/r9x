@@ -63,26 +63,25 @@ pub extern "C" fn main9(dtb_va: usize) {
     };
     process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
 
-    // The mailbox server: owns the Mailbox property interface.  The display
-    // server sends it a framebuffer config request during init.
-    let mbox_in = ipc::create();
-    let mbox_out = ipc::create();
+    // The mailbox server: owns the Mailbox property interface.  The nameserver's
+    // handles go in the extra fields (the server makes its own pair for serving).
     process::spawn(&process::Image::Elf {
         bytes: MAILBOX_ELF,
         handles: Some(process::Handles {
-            inbound: mbox_in as u32,
-            outbound: mbox_out as u32,
-            extra_inbound: 0,
-            extra_outbound: 0,
+            inbound: 0,
+            outbound: 0,
+            extra_inbound: ns_in as u32,
+            extra_outbound: ns_out as u32,
         }),
     });
 
-    // The display server: handed the nameserver's and mailbox's handles.
+    // The display server: handed the nameserver's handles (it finds the
+    // mailbox server by RESOLVE).
     let display_handles = process::Handles {
         inbound: ns_in as u32,
         outbound: ns_out as u32,
-        extra_inbound: mbox_in as u32,
-        extra_outbound: mbox_out as u32,
+        extra_inbound: 0,
+        extra_outbound: 0,
     };
     process::spawn(&process::Image::Elf { bytes: DISPLAY_ELF, handles: Some(display_handles) });
 

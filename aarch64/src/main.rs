@@ -100,12 +100,13 @@ pub extern "C" fn main9(dtb_va: usize) {
     // `system` integration test (both call `system::bringup`).
     println!("starting system");
 
-    let (ns_handles, mbox_handles) = system::bringup();
+    let (ns_handles, _mbox_handles) = system::bringup();
 
     // Spawn the display server.  It configures the framebuffer via IPC to
-    // the mailbox server, maps it via `SYS_MAP_MMIO`, and writes the color
-    // bar.  It runs forever (the frame loop), so it is not in `bringup()`.
-    system::spawn_display(ns_handles, mbox_handles);
+    // the mailbox server (found by RESOLVE), maps it via `SYS_MAP_MMIO`, and
+    // writes the color bar.  It runs forever (the frame loop), so it is not
+    // in `bringup()`.
+    system::spawn_display(ns_handles);
 
     // The console server is up (spawned; its BIND is processed during the
     // first run_all).  Gate off the kernel's normal output: from here on,
