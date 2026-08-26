@@ -723,7 +723,13 @@ impl QemuStep {
                 // no display needed).  Omitted for the default kernel image
                 // so QEMU opens a display window (the VideoCore framebuffer
                 // is visible).
-                if is_test_image || self.systrace {
+                // `-nographic` disables the display window AND redirects the
+                // first serial to the terminal.  Test images need it (they
+                // exit via semihosting, no display).  The full kernel with
+                // --systrace does NOT need it: `-serial mon:stdio` already
+                // sends the PL011 to the terminal, and the display window
+                // stays open (the VideoCore framebuffer is visible).
+                if is_test_image {
                     cmd.arg("-nographic");
                 }
 
