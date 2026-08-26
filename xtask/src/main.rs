@@ -983,11 +983,34 @@ impl ClippyStep {
         // it before any lint pass so such an image finds it.
         ServerStep::new(self.arch, self.profile, self.verbose).run()?;
 
-        // Libs and bins, linted the way the kernel is built.
+        // Libs and bins, linted the way the kernel is built.  The servers
+        // and r9x_std are the user-space tree: they are linted for the r9
+        // target they are actually built for (the pass below), not here,
+        // where the servers' default-target (the kernel's os="none") would
+        // not see `#[cfg(target_os = "r9")]` code and the host pass would
+        // check the libs against the wrong OS.
         let mut cmd = self.command();
         cmd.arg("--workspace");
-        exclude_foreign_servers(self.arch, &mut cmd);
+        exclude_all_servers(&mut cmd);
+        cmd.arg("--exclude").arg("r9x-std");
         exclude_other_arches(self.arch, &mut cmd);
+        self.lint(cmd)?;
+
+        // The user-space tree, linted for the r9 target it is built for.  The
+        // `--workspace` pass above uses each server's default-target (the
+        // kernel's os="none") and the libs' absence of one (the host), neither
+        // of which is where they ship; this is where `#[cfg(target_os = "r9")]`
+        // code is checked.  Same flags as the ServerStep build, and every r9
+        // target is reached because r9x_std is linted for its own arch even
+        // where no server has landed yet (riscv64, x86_64).
+        let mut cmd = self.command();
+        for s in servers_for(self.arch) {
+            cmd.arg("-p").arg(s);
+        }
+        cmd.arg("-p").arg("r9x-std");
+        cmd.arg("--target").arg(self.arch.user_spec());
+        cmd.arg("-Z").arg("build-std=core,alloc");
+        cmd.arg("-Z").arg("json-target-spec");
         self.lint(cmd)?;
 
         // Tests and benches are separate targets and are not covered above.
@@ -1966,6 +1989,16 @@ fn exclude_foreign_servers(arch: Arch, cmd: &mut Command) {
     let ours = servers_for(arch);
     let all = all_servers();
     for s in all.iter().filter(|s| !ours.contains(*s)) {
+        cmd.arg("--exclude").arg(s);
+    }
+}
+
+/// Exclude every server, for any arch.  Used by the clippy `--workspace`
+/// pass, which now lints the servers for the r9 target in their own pass
+/// instead of here, where their default-target (the kernel's os="none")
+/// would not match the target they are built for.
+fn exclude_all_servers(cmd: &mut Command) {
+    for s in all_servers() {
         cmd.arg("--exclude").arg(s);
     }
 }
