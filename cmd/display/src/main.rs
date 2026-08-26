@@ -44,14 +44,6 @@ const WIDTH: usize = 640;
 const HEIGHT: usize = 480;
 const FB_SIZE: usize = WIDTH * HEIGHT * 4;
 
-/// The frame period: 60 Hz, in counter ticks (16,666,667 ticks ≈ 16.7 ms at
-/// 1 GHz).  The pacing deadline is this many ticks from the last frame.
-/// On QEMU the tick period is 100 ms (the kernel's `TICK_PERIOD`), so the
-/// effective frame rate is 10 Hz (the deadline is checked at each tick).
-/// On the Pi the vblank interrupt (16.7 ms) is the pacing source, so the
-/// frame rate is 60 Hz.
-const FRAME_PERIOD: u64 = 16_666_667;
-
 /// The color bar's width, in pixels.  A 32-pixel-wide bar — wide enough to
 /// see, narrow enough to move noticeably across the frame.
 const BAR_WIDTH: usize = 32;
@@ -138,7 +130,7 @@ fn main() {
         frame_number = frame_number.wrapping_add(1);
         write_frame(&mut fb, frame_number);
         let mut buf = [0u8; 0];
-        let deadline = time::now().saturating_add(FRAME_PERIOD);
+        let deadline = time::now().saturating_add(time::FRAME_PERIOD);
         let _ = ipc::receive_at(pacing_chan, &mut buf, deadline);
     }
 }

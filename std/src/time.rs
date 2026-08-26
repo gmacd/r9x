@@ -12,6 +12,14 @@ use crate::sys::sys;
 /// compile-time constant: a hardware change is a one-line update here.
 pub const COUNTER_FREQ: u64 = 1_000_000_000;
 
+/// The frame period for 60 Hz display pacing, in ticks
+/// (16,666,667 ticks ≈ 16.7 ms at 1 GHz).  The display server uses this as
+/// its deadline increment.  On QEMU the tick period is 100 ms (the kernel's
+/// `TICK_PERIOD`), so the effective frame rate is 10 Hz (the deadline is
+/// checked at each tick).  On the Pi the vblank interrupt (16.7 ms) is the
+/// pacing source, so the frame rate is 60 Hz.
+pub const FRAME_PERIOD: u64 = 16_666_667;
+
 /// The monotonic clock's value, in ticks.  A `SYS_CLOCK` read — a register
 /// read in the kernel, so no lock, no allocation.  The caller converts ticks
 /// to a duration with [`COUNTER_FREQ`].
