@@ -10,5 +10,10 @@
 //! depends on this crate for the shared code.
 
 #![no_std]
+#![feature(step_trait)]
 
+#[cfg(test)]
+extern crate alloc;
+
+pub mod addr;
 pub mod fdt;
