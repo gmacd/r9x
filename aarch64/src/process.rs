@@ -57,7 +57,8 @@ use port::{iprintln, mem};
 pub use r9x_abi::{
     SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_MAX_HANDLES, SPAWN_NO_SLOT,
     SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_ALLOC_PAGE, SYS_CLOCK, SYS_FREE,
-    SYS_RECEIVE_AT, SYS_SPAWN, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
+    SYS_KILL, SYS_RECEIVE_AT, SYS_SPAWN, SYS_WAIT, SYSEXIT, SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
+    WAIT_BAD_ID, WAIT_TIMEOUT,
 };
 
 /// The exit status a faulted process is marked with: distinct from a clean
@@ -1659,12 +1660,88 @@ pub(crate) fn fault(_far: u64, _esr: crate::reg::esr_el1::EsrEl1) -> ! {
     }
 }
 
+/// Reap a finished child: find a zombie matching `child_id` (0 = any),
+/// return its id and exit status, and free the slot.  A timeout or a bad
+/// id returns the corresponding sentinel.  The caller is a user process
+/// (the parent), so this runs under the table lock and does not block
+/// (the blocking case is handled by the trap dispatch's deadline
+/// machinery, which is not wired this arc — `deadline` is accepted but
+/// ignored; the call always returns immediately with a timeout if no
+/// zombie is available).
+#[cfg(target_os = "none")]
+pub fn sys_wait(child_id: u64, _deadline: u64) -> (u64, u64) {
+    const WAIT_TIMEOUT: u64 = 0xff_ff_ff_ff;
+    const WAIT_BAD_ID: u64 = 0xff_ff_ff_fe;
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    let id = child_id as usize;
+    if id != 0
+        && (id >= table.len()
+            || !matches!(table.get(id), Some(Some(p)) if p.state == State::Exited))
+    {
+        return (WAIT_BAD_ID, 0);
+    }
+    let idx = if id == 0 {
+        table.iter().position(|slot| matches!(slot, Some(p) if p.state == State::Exited))
+    } else {
+        Some(id)
+    };
+    match idx {
+        Some(idx) => {
+            let (pid, status) = {
+                let p = table[idx].as_mut().unwrap();
+                (idx as u64, p.exit_status)
+            };
+            table[idx] = None;
+            (pid, status)
+        }
+        None => (WAIT_TIMEOUT, 0),
+    }
+}
+
+/// Terminate a process: mark it for termination.  If the target is
+/// Running it is marked Exited (it will not be re-selected); if it is
+/// Runnable or Blocked it is marked Exited (it is removed from the
+/// ready set).  A bad id returns the error code.
+#[cfg(target_os = "none")]
+pub fn sys_kill(pid: u64) -> u64 {
+    const KILL_BAD_ID: u64 = 1;
+    let id = pid as usize;
+    if id >= NPROCS {
+        return KILL_BAD_ID;
+    }
+    let node = LockNode::new();
+    let mut table = TABLE.lock(&node);
+    match table.get_mut(id) {
+        Some(Some(p)) if p.state != State::Exited => {
+            p.exit_status = KILL_STATUS;
+            p.state = State::Exited;
+            0
+        }
+        _ => KILL_BAD_ID,
+    }
+}
+
+/// The exit status assigned by `SYS_KILL`.
+#[cfg(target_os = "none")]
+pub const KILL_STATUS: u64 = 0x7f;
+
 #[cfg(not(target_os = "none"))]
 pub(crate) fn irq_resched() {}
 
 #[cfg(not(target_os = "none"))]
 pub fn preemptions() -> u64 {
     0
+}
+
+#[cfg(not(target_os = "none"))]
+pub fn sys_wait(_child_id: u64, _deadline: u64) -> (u64, u64) {
+    (0, 0)
+}
+
+#[cfg(not(target_os = "none"))]
+pub fn sys_kill(_pid: u64) -> u64 {
+    1
 }
 
 #[cfg(test)]

@@ -2,7 +2,8 @@
 //! another.
 
 use r9x_abi::{
-    SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_NO_SLOT, SYS_SPAWN, SYSEXIT, SYSYIELD,
+    KILL_BAD_ID, SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_NO_SLOT, SYS_KILL,
+    SYS_SPAWN, SYS_WAIT, SYSEXIT, SYSYIELD, WAIT_BAD_ID, WAIT_TIMEOUT,
 };
 
 use crate::sys::sys;
@@ -70,4 +71,66 @@ pub fn exit(code: u64) -> ! {
 /// Voluntarily yield the CPU to other ready processes.
 pub fn yield_now() {
     let _ = unsafe { sys(SYSYIELD, 0, 0, 0, 0, 0) };
+}
+
+/// The result of a [`wait`](ProcessId::wait) call.
+pub enum WaitResult {
+    /// A child was reaped: its id and exit status.
+    Reaped(ProcessId, u64),
+    /// No child was available (timeout or no matching zombie).
+    Timeout,
+    /// The specified child id is not a zombie.
+    BadId,
+}
+
+impl ProcessId {
+    /// Wait for this child to finish.  Returns its exit status on success,
+    /// or an error.  The deadline is in counter ticks (0 = block forever;
+    /// the current implementation always returns immediately).
+    pub fn wait(self, deadline: u64) -> Result<u64, WaitError> {
+        let (id, status, _) = unsafe { sys(SYS_WAIT, self.0 as u64, deadline, 0, 0, 0) };
+        if id == WAIT_BAD_ID {
+            Err(WaitError::BadId)
+        } else if id == WAIT_TIMEOUT {
+            Err(WaitError::Timeout)
+        } else {
+            Ok(status)
+        }
+    }
+
+    /// Terminate the process with this id.  Returns `Ok(())` on success,
+    /// `Err(KillError::BadId)` if the id is not a live process.
+    pub fn kill(self) -> Result<(), KillError> {
+        let (result, _, _) = unsafe { sys(SYS_KILL, self.0 as u64, 0, 0, 0, 0) };
+        if result == KILL_BAD_ID { Err(KillError::BadId) } else { Ok(()) }
+    }
+}
+
+/// Wait for any child to finish.  Returns the reaped child's id and exit
+/// status, or an error.
+pub fn wait_any(deadline: u64) -> Result<(ProcessId, u64), WaitError> {
+    let (id, status, _) = unsafe { sys(SYS_WAIT, 0, deadline, 0, 0, 0) };
+    if id == WAIT_BAD_ID {
+        Err(WaitError::BadId)
+    } else if id == WAIT_TIMEOUT {
+        Err(WaitError::Timeout)
+    } else {
+        Ok((ProcessId(id as usize), status))
+    }
+}
+
+/// An error from [`wait`](ProcessId::wait).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WaitError {
+    /// No zombie was available (timeout).
+    Timeout,
+    /// The specified child id is not a zombie.
+    BadId,
+}
+
+/// An error from [`kill`](ProcessId::kill).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KillError {
+    /// The target id is not a live or zombie process.
+    BadId,
 }

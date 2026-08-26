@@ -56,6 +56,11 @@ harness = false
 required-features = ["qemu-test"]
 
 [[test]]
+name = "procctl"
+harness = false
+required-features = ["qemu-test"]
+
+[[test]]
 name = "timers"
 harness = false
 required-features = ["qemu-test"]

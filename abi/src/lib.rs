@@ -146,6 +146,24 @@ pub const SYS_RECEIVE_AT: u64 = 26;
 /// cache, or the server must invalidate.
 pub const SYS_ALLOC_PAGE: u64 = 27;
 
+/// Reap a finished child: x0 = child id (0 = any), x1 = deadline in
+/// counter ticks (0 = block forever).  Returns x0 = reaped child id,
+/// x1 = its exit status.  On timeout x0 = [`WAIT_TIMEOUT`], x1 = 0.
+/// On a bad child id x0 = [`WAIT_BAD_ID`], x1 = 0.
+pub const SYS_WAIT: u64 = 28;
+/// The `SYS_WAIT` timeout sentinel (returned in x0).
+pub const WAIT_TIMEOUT: u64 = 0xff_ff_ff_ff;
+/// The `SYS_WAIT` bad-child-id sentinel (returned in x0).
+pub const WAIT_BAD_ID: u64 = 0xff_ff_ff_fe;
+
+/// Terminate a process: x0 = target id.  The target is marked for
+/// termination; it dies on the next switch (or immediately if not
+/// Running).  Returns x0 = 0 on success, [`KILL_BAD_ID`] if the id is
+/// not a live or zombie process.
+pub const SYS_KILL: u64 = 29;
+/// The `SYS_KILL` bad-id error (returned in x0).
+pub const KILL_BAD_ID: u64 = 1;
+
 // `SYS_SPAWN` result codes.  A value below `SPAWN_ERR_MIN` is a process id
 // (a table index, 0..NPROCS, and NPROCS is far below the bound); at or above
 // it is one of these errors.  The spawner maps them back to its own errors.
