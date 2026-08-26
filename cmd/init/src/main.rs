@@ -71,17 +71,17 @@ fn main() {
         other => panic!("init: bad index must be BadIndex, got {other:?}"),
     }
 
-    // A full process table is an error, not a fault.  init is one slot; the
-    // table has eight.  The child took one; six more fillers fill the rest
-    // (init + seven children = eight), and the next spawn is the error.
-    for _ in 0..6 {
-        if let Err(e) = process::spawn(CHILD_INDEX, state_va, 128) {
-            panic!("init: filler spawn failed early: {e:?}");
+    // A full process table is an error, not a fault.  init doesn't know how
+    // many slots the kernel's other servers (nameserver, console) took, so it
+    // fills the table by spawning until the kernel refuses: the spawn returns
+    // `NoSlot` when the table is full (however many other processes share it),
+    // and that refusal — not a fault — is the check.
+    loop {
+        match process::spawn(CHILD_INDEX, state_va, 128) {
+            Ok(_) => {}
+            Err(process::SpawnErr::NoSlot) => break,
+            other => panic!("init: full table must be NoSlot, got {other:?}"),
         }
-    }
-    match process::spawn(CHILD_INDEX, state_va, 128) {
-        Err(process::SpawnErr::NoSlot) => {}
-        other => panic!("init: full table must be NoSlot, got {other:?}"),
     }
 
     // Receive the child's round-trip message and check it: the child reported

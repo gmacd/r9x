@@ -10,7 +10,7 @@ use aarch64::kmem::{
     total_kernel_physrange,
 };
 use aarch64::vm::RootPageTableType;
-use aarch64::{boot, ipc, mailbox, pagealloc, process, vm};
+use aarch64::{boot, ipc, mailbox, pagealloc, process, registry, registry::EmbeddedElf, vm};
 use port::mem::{PhysRange, VirtRange};
 use port::println;
 
@@ -80,6 +80,10 @@ fn print_stacks() {
 static CONSOLE_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/console.elf"));
 static NAMESERVER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nameserver.elf"));
 static INIT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.elf"));
+static CHILD_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/child.elf"));
+// The registry entry for the child: `static` so it outlives the `register`
+// borrow (the registry holds `&'static` entries).
+static CHILD_EMBEDDED: EmbeddedElf = EmbeddedElf { bytes: CHILD_ELF, name: "child" };
 
 /// dtb_va is the virtual address of the DTB structure.  The physical address is
 /// assumed to be dtb_va-KZERO.
@@ -141,13 +145,26 @@ pub extern "C" fn main9(dtb_va: usize) {
     // console server blocks on its post-bind receive.
     println!("starting system");
 
+    // Register the image registry: init (the process manager) spawns the
+    // child by index, so the child must be registered before init runs.
+    // index 0 is the child; the nameserver and console are the init-context
+    // spawn (not registry entries — they are hard-started by the kernel,
+    // not launched by init).
+    registry::register(&[&CHILD_EMBEDDED]);
+
     let ns_in = ipc::create();
     let ns_out = ipc::create();
     let ns_handles = process::Handles { inbound: ns_in as u32, outbound: ns_out as u32 };
+    // init's own pair: the process manager reads its child-state (the
+    // generalized `HANDLES_VA` header) before it can spawn, so it needs a
+    // real pair — a zero page would be `n_handles == 0`, not a pair.
+    let init_in = ipc::create();
+    let init_out = ipc::create();
+    let init_handles = process::Handles { inbound: init_in as u32, outbound: init_out as u32 };
 
     process::spawn(&process::Image::Elf { bytes: NAMESERVER_ELF, handles: Some(ns_handles) });
     process::spawn(&process::Image::Elf { bytes: CONSOLE_ELF, handles: Some(ns_handles) });
-    process::spawn(&process::Image::Elf { bytes: INIT_ELF, handles: None });
+    process::spawn(&process::Image::Elf { bytes: INIT_ELF, handles: Some(init_handles) });
 
     // The console server is up (spawned; its BIND is processed during the
     // first run_all).  Gate off the kernel's normal output: from here on,
