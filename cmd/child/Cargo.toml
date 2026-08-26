@@ -1,0 +1,27 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "child"
+version = "0.1.0"
+edition = "2024"
+default-target = "aarch64-unknown-none"
+
+# The child: the reporter a `SYS_SPAWN` spawner brings up by index.  It is the
+# load-bearing proof that a running process (init) can launch another by image
+# index and hand it a child-state page: the child reads its spawner-passed
+# channel pair (the generalized `HANDLES_VA` header), reports it back over the
+# message, and blocks — alive.  The `spawn` integration image registers it in
+# the kernel's image registry and checks, after `run_all`, that no process
+# exited (a fault or a panic ends a process; a dead one is the failure).
+#
+# Aarch64-only for the arc, as the other servers are.  Built by `cargo xtask`
+# (ServerStep), not by a bare `cargo build`.
+#
+# Links `r9x_std`, the curated r9 facade (the syscall core, the runtime entry
+# and the kernel-backed heap).
+
+[dependencies]
+r9x-std = { path = "../../std" }
+
+[lints]
+workspace = true

@@ -55,13 +55,32 @@ pub fn device_tree() -> r9x_core::fdt::DeviceTree<'static> {
 }
 
 /// This process's spawner-passed channel pair, read from the `HANDLES_VA`
-/// page the spawner wrote `[in:4 LE][out:4 LE]` into before this process's
-/// first instruction.
+/// page the spawner wrote into before this process's first instruction.  The
+/// page is the generalized child-state header —
+/// `[n_handles:4 LE][handle:4 LE ...][argc:4 LE][argv ...]` (the layout
+/// [`r9x_abi::SPAWN_MAX_HANDLES`] documents) — and a server's state is a pair
+/// (`n_handles = 2`): this returns the first two handles, the channel pair.
+/// A state with fewer handles (a `SYS_SPAWN` child handed a bare value, or
+/// none) is not a pair; a caller that must distinguish reads the raw page.
 pub fn handles() -> (u32, u32) {
     let p = HANDLES_VA as *const u32;
-    // SAFETY: the spawner wrote the pair to this page before this process's
-    // first instruction; the two 32-bit reads are in-bounds of that page.
-    unsafe { (core::ptr::read_volatile(p), core::ptr::read_volatile(p.add(1))) }
+    // SAFETY: the spawner wrote the header to this page before this process's
+    // first instruction; the two 32-bit reads (the first two handles, at
+    // offsets 4 and 8, under the count) are in-bounds of that page.
+    unsafe { (core::ptr::read_volatile(p.add(1)), core::ptr::read_volatile(p.add(2))) }
+}
+
+/// The spawner-passed child-state's handle count: the first word of the
+/// `HANDLES_VA` page (the generalized header's `n_handles`).  A server's state
+/// is a pair (2); a `SYS_SPAWN` child with no state is a zero page (0).  A
+/// spawner that handed a pair and a child that read none (0) have a spawner
+/// bug, and the count — not the first handle — is the check (channel 0 is a
+/// valid handle: the table is indexed from 0).
+pub fn n_handles() -> u32 {
+    let p = HANDLES_VA as *const u32;
+    // SAFETY: the spawner wrote the header (or the kernel zeroed the page);
+    // the read is in-bounds of that page.
+    unsafe { core::ptr::read_volatile(p) }
 }
 
 /// The panic handler: r9's panic strategy is to end the process.  A server

@@ -38,3 +38,7 @@ pub mod process;
 pub mod rt;
 /// The thin syscall core: the only per-architecture part of `r9x_std`.
 pub mod sys;
+/// Threads, in the honest first form (Decision 2: a thread is a process the
+/// caller spawns and `waits` on, not a light-weight context in the caller's
+/// address space).
+pub mod thread;

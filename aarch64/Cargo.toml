@@ -115,5 +115,10 @@ name = "heap"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "spawn"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true

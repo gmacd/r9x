@@ -29,6 +29,7 @@ pub mod process;
 pub mod qemu;
 pub mod reg;
 pub mod registers;
+pub mod registry;
 pub mod runtime;
 pub mod swtch;
 pub mod timer;

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 /// The aarch64 user-space servers the embedding images may include; must match
 /// xtask's `ServerStep::SERVERS` (the two stage the same paths).
-const SERVERS: [&str; 4] = ["console", "nameserver", "init", "heaptask"];
+const SERVERS: [&str; 5] = ["console", "nameserver", "init", "heaptask", "child"];
 
 fn main() {
     let manifest_dir =

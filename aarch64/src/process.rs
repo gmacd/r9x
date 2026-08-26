@@ -55,8 +55,9 @@ use port::{iprintln, mem};
 // (the number in x8, arguments in x0-x4) is spelled where the trap frame is
 // laid out.
 pub use r9x_abi::{
-    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_FREE, SYSEXIT, SYSIRQCLAIM,
-    SYSMAPMMIO, SYSYIELD,
+    SPAWN_BAD_INDEX, SPAWN_BAD_STATE, SPAWN_ERR_MIN, SPAWN_MAX_HANDLES, SPAWN_NO_SLOT,
+    SYCCREATECHAN, SYCRECEIVE, SYCREPLY, SYCSEND, SYS_ALLOC, SYS_FREE, SYS_SPAWN, SYSEXIT,
+    SYSIRQCLAIM, SYSMAPMMIO, SYSYIELD,
 };
 
 /// The exit status a faulted process is marked with: distinct from a clean
@@ -571,14 +572,30 @@ const ELF_BASE: usize = port::user::IMAGE_BASE;
 #[cfg(target_os = "none")]
 const STACK_PAGES: usize = 16;
 
-/// The `Image::Elf` arm: load a self-describing static ELF.  Parse it, validate
-/// each segment's placement (arch-specific — the `port::elf` reader checks
-/// structure only), map the segments into a fresh `Aspace` (executable text vs.
-/// data), copy the file bytes and zero the bss, map the stack above the
-/// highest segment, write the spawner-passed channel pair to `HANDLES_VA`
-/// (when present), and start the process at `e_entry`.
+/// The layout a loaded ELF leaves in a fresh `Aspace`: the entry point, the
+/// user stack pointer, and the heap base (= the stack's top, page-aligned —
+/// the heap grows up from there).  `load_elf` builds it; the spawn arms differ
+/// only in what they write to `HANDLES_VA` and how they install the process
+/// (the init-context `spawn_elf` writes the pair and installs, panicking on a
+/// full table; the live `sys_spawn` writes the child-state and `try_install`s,
+/// erroring on a full table).
 #[cfg(target_os = "none")]
-fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
+struct LoadedElf {
+    aspace: crate::aspace::Aspace,
+    entry: usize,
+    user_sp: usize,
+    heap_base: usize,
+}
+
+/// Load a self-describing static ELF into a fresh `Aspace`: parse it, validate
+/// each segment's placement (arch-specific — the `port::elf` reader checks
+/// structure only), map the segments (executable text vs. data), copy the file
+/// bytes and zero the bss, and map the stack above the highest segment.
+/// Returns the layout.  Panics on a malformed ELF or a bad placement — the
+/// embedded images are well-formed, so a panic is a kernel bug (a bad image),
+/// not a user error.
+#[cfg(target_os = "none")]
+fn load_elf(bytes: &[u8]) -> LoadedElf {
     let image = port::elf::parse(bytes).unwrap_or_else(|err| panic!("elf: {err:?}"));
     let segs = image.segments();
 
@@ -684,39 +701,118 @@ fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
             .map_user_page(Entry::rw_user_data(), stack_base + page * mem::PAGE_SIZE_4K)
             .unwrap_or_else(|err| panic!("elf: stack page: {err:?}"));
     }
-    // The spawner-passed channel pair: if present, map `HANDLES_VA` and write
-    // `[inbound:4 LE][outbound:4 LE]`.  The page sits in the user half, clear
-    // of the image (at `ELF_BASE`) and its stack by a wide margin, so it is
-    // never a segment or a stack page the placement checks above would place.
-    if let Some(h) = handles {
-        let mut pair = [0u8; 8];
-        pair[0..4].copy_from_slice(&h.inbound.to_le_bytes());
-        pair[4..8].copy_from_slice(&h.outbound.to_le_bytes());
-        let kptr = aspace
-            .map_user_page(Entry::rw_user_data(), port::user::HANDLES_VA)
-            .unwrap_or_else(|err| panic!("elf: handles page: {err:?}"));
-        // SAFETY: `kptr` is a freshly mapped page, valid and kernel-writable,
-        // and 8 bytes fit.
-        unsafe { core::ptr::copy_nonoverlapping(pair.as_ptr(), kptr, 8) };
-    }
+    // The user stack pointer (16 below the top: a 16-byte frame for the
+    // initial call) and the heap base (= the stack's top, page-aligned and in
+    // the user half — the stack's top page is < KZERO, checked by the segment
+    // placement above).
     let user_sp = stack_base + STACK_PAGES * mem::PAGE_SIZE_4K - 16;
-    // The heap base: just above the stack (page-aligned and in the user half —
-    // the stack's top page is < KZERO, checked by the segment placement above).
-    install(aspace, image.entry as usize, user_sp, stack_base + STACK_PAGES * mem::PAGE_SIZE_4K)
+    let heap_base = stack_base + STACK_PAGES * mem::PAGE_SIZE_4K;
+    LoadedElf { aspace, entry, user_sp, heap_base }
 }
 
-/// Claim a free slot and store a new process with the given `Aspace`, entry
-/// point (`elr`), and user stack pointer (`user_sp`).  Shared by the raw and
-/// ELF spawn arms: the only difference between them is how the `Aspace` is
-/// built and what the entry/stack point at.  Called after the `Aspace` is
-/// fully built (the page allocs already ran, outside the table lock).
+/// The `Image::Elf` arm: load the ELF (via [`load_elf`]) and start the process
+/// at its entry.  When `handles` is present, write the spawner-passed channel
+/// pair to `HANDLES_VA` as the generalized header (`[2:4][in:4][out:4]` — the
+/// old `[in:4][out:4]` under a count).  Installs the process, panicking on a
+/// full table (the init-context path: the failure report, not a recoverable
+/// error).
 #[cfg(target_os = "none")]
-fn install(
+fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
+    let loaded = load_elf(bytes);
+    // The spawner-passed channel pair: when present, map `HANDLES_VA` and
+    // write the generalized header.  The page sits in the user half, clear of
+    // the image (at `ELF_BASE`) and its stack by a wide margin, so it is never
+    // a segment or a stack page the placement checks in `load_elf` would
+    // place.  The page is zeroed by `map_user_page`, so only the header words
+    // are written.
+    if let Some(h) = handles {
+        let kptr = loaded
+            .aspace
+            .map_user_page(Entry::rw_user_data(), port::user::HANDLES_VA)
+            .unwrap_or_else(|err| panic!("elf: handles page: {err:?}"));
+        let mut header = [0u8; 12];
+        header[0..4].copy_from_slice(&2u32.to_le_bytes());
+        header[4..8].copy_from_slice(&h.inbound.to_le_bytes());
+        header[8..12].copy_from_slice(&h.outbound.to_le_bytes());
+        // SAFETY: kptr is a freshly mapped, zeroed page, valid and
+        // kernel-writable, and 12 bytes fit.
+        unsafe { core::ptr::copy_nonoverlapping(header.as_ptr(), kptr, 12) };
+    }
+    install(loaded.aspace, loaded.entry, loaded.user_sp, loaded.heap_base)
+}
+
+/// The `SYS_SPAWN` handler: spawn a process from the image registry by
+/// `index`, handing it the child-state at `state_va` (a page in the spawner's
+/// address space, or 0 for none) and the `prio` priority.  Returns the
+/// child's id, or an error code — a bad index, a full table, or a malformed
+/// child-state/priority, all errors the spawner recovers from, not faults.
+///
+/// The spawner's child-state page is read through the spawner's `TTBR0`
+/// (installed during the syscall, so the spawner's user VAs are reachable in
+/// EL1 — the same arc `copy_from_user` runs on) and written to the child's
+/// `HANDLES_VA` page through the child's `TTBR1` (the identity map the kernel
+/// runs in).  The child reads its state from the very first instruction.  All
+/// the checks that can refuse a spawn (the index, the priority, the
+/// child-state's `n_handles`) run before any mapping, so a refused spawn
+/// leaks nothing.
+#[cfg(target_os = "none")]
+pub(crate) fn sys_spawn(index: u64, state_va: u64, prio: u64) -> u64 {
+    // The image: a bad index is an error, not a fault (checked before any
+    // mapping).
+    let Some(img) = crate::registry::lookup(index as usize) else {
+        return SPAWN_BAD_INDEX;
+    };
+    // The priority: 0..=254 (0 most urgent); 255, the idle sentinel, is never
+    // a spawn.  Checked before any mapping.
+    let prio = match prio {
+        p if p <= 254 => Priority::new(p as u8),
+        _ => return SPAWN_BAD_STATE,
+    };
+    // The child-state: read the spawner's page (or none → a zero page) and
+    // validate its header.  `n_handles` must fit the page (the rest is argv);
+    // more is malformed.  Checked before any mapping.
+    let mut state = [0u8; mem::PAGE_SIZE_4K];
+    if state_va != 0 {
+        unsafe { crate::ipc::copy_from_user(&mut state, state_va as *const u8, mem::PAGE_SIZE_4K) };
+        let n_handles = u32::from_le_bytes(state[0..4].try_into().unwrap()) as usize;
+        if n_handles > SPAWN_MAX_HANDLES {
+            return SPAWN_BAD_STATE;
+        }
+    }
+    // Build the child's `Aspace` (maps the segments and stack) and write the
+    // child-state to its `HANDLES_VA` page (via the child's TTBR1, the identity
+    // map the kernel runs in).
+    let loaded = load_elf(img.bytes);
+    let kptr = loaded
+        .aspace
+        .map_user_page(Entry::rw_user_data(), port::user::HANDLES_VA)
+        .unwrap_or_else(|err| panic!("elf: child-state page: {err:?}"));
+    // SAFETY: kptr is a freshly mapped, zeroed page, valid and kernel-writable;
+    // a full page fits.
+    unsafe { core::ptr::copy_nonoverlapping(state.as_ptr(), kptr, mem::PAGE_SIZE_4K) };
+    // Install the child: a full table is an error, not a fault.
+    match try_install(loaded.aspace, loaded.entry, loaded.user_sp, loaded.heap_base, prio) {
+        Some(id) => id as u64,
+        None => SPAWN_NO_SLOT,
+    }
+}
+
+/// The core of a spawn: claim a free slot and store a new process with the
+/// given `Aspace`, entry point (`elr`), user stack pointer (`user_sp`), and
+/// `prio`.  Returns the slot, or `None` when the table is full (every slot is
+/// Running or Runnable — the error a live `SYS_SPAWN` maps to
+/// [`SPAWN_NO_SLOT`], not a fault).  Shared by the raw and ELF spawn arms: the
+/// only difference between them is how the `Aspace` is built and what the
+/// entry/stack point at.  Called after the `Aspace` is fully built (the page
+/// allocs already ran, outside the table lock).
+#[cfg(target_os = "none")]
+fn try_install(
     aspace: crate::aspace::Aspace,
     elr: usize,
     user_sp: usize,
     heap_base: usize,
-) -> ProcessId {
+    prio: Priority,
+) -> Option<ProcessId> {
     let node = LockNode::new();
     // A slot is free when it is empty or already Exited: reclaiming is
     // lazy, and a slot is never overwritten while a raw pointer to its
@@ -730,10 +826,7 @@ fn install(
     let id = table.iter().position(|slot| match slot {
         None => true,
         Some(p) => p.state == State::Exited,
-    });
-    let Some(id) = id else {
-        panic!("proc: no free slot: all {NPROCS} slots are Running or Runnable")
-    };
+    })?;
     let kstack = unsafe { KSTACKS.stacks.get().cast::<u8>().add(id * KSTACK_SZ) };
     let context = forkret_context(id, elr, user_sp);
     // The heap base must be page-aligned (the brk is page-granular) and in the
@@ -749,14 +842,29 @@ fn install(
         context,
         kstack,
         exit_status: 0,
-        prio: PriorityState::new(DEFAULT_PRIORITY),
+        prio: PriorityState::new(prio),
         aspace,
         heap_base,
         heap_brk: heap_base,
         heap_hwm: heap_base,
     };
     table[id] = Some(proc);
-    id
+    Some(id)
+}
+
+/// Claim a free slot and store a new process at its default priority.  The
+/// init-context path (the `Image::Raw`/`Image::Elf` spawns from `main9`),
+/// where a full table is a panic (the failure report), not the recoverable
+/// error a live `SYS_SPAWN` returns.
+#[cfg(target_os = "none")]
+fn install(
+    aspace: crate::aspace::Aspace,
+    elr: usize,
+    user_sp: usize,
+    heap_base: usize,
+) -> ProcessId {
+    try_install(aspace, elr, user_sp, heap_base, DEFAULT_PRIORITY)
+        .unwrap_or_else(|| panic!("proc: no free slot: all {NPROCS} slots are Running or Runnable"))
 }
 
 /// Fabricate a process's entry frame and `Context` on its kstack.
@@ -883,6 +991,19 @@ pub fn status(id: ProcessId) -> Option<u64> {
         Some(Some(p)) if p.state == State::Exited => Some(p.exit_status),
         _ => None,
     }
+}
+
+/// True if any process in the table has exited.  The test images' failure
+/// check: a fault or a panic ends a process (a `SYS_SPAWN` child or the
+/// spawner that drove the error cases), so an exited process is the failure,
+/// and an all-alive table (every occupied slot Running or Blocked) is the
+/// success.  A `SYS_SPAWN` child has no id the image knows (its spawner
+/// learned it), so the image checks the whole table rather than one slot.
+#[cfg(target_os = "none")]
+pub fn any_exited() -> bool {
+    let node = LockNode::new();
+    let table = TABLE.lock(&node);
+    table.iter().any(|slot| matches!(slot, Some(p) if p.state == State::Exited))
 }
 
 /// Set `id`'s base priority (and its effective, when not boosted).  A process
@@ -1390,6 +1511,11 @@ pub fn status(_id: ProcessId) -> Option<u64> {
 }
 
 #[cfg(not(target_os = "none"))]
+pub fn any_exited() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "none"))]
 pub(crate) fn yield_current() {
     loop {
         core::hint::spin_loop();
@@ -1401,6 +1527,11 @@ pub(crate) fn exit_current(_status: u64) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+#[cfg(not(target_os = "none"))]
+pub(crate) fn sys_spawn(_index: u64, _state_va: u64, _prio: u64) -> u64 {
+    SPAWN_BAD_INDEX
 }
 
 #[cfg(not(target_os = "none"))]
@@ -1436,6 +1567,18 @@ mod tests {
         assert_eq!(SYSYIELD, r9x_abi::SYSYIELD);
         assert_eq!(SYS_ALLOC, r9x_abi::SYS_ALLOC);
         assert_eq!(SYS_FREE, r9x_abi::SYS_FREE);
+        assert_eq!(SYS_SPAWN, r9x_abi::SYS_SPAWN);
+        // The `SYS_SPAWN` error codes pin too: a valid process id is a table
+        // index 0..NPROCS (far below the bound), so the errors sit at or above
+        // `SPAWN_ERR_MIN`, distinct from every id.
+        assert_eq!(SPAWN_BAD_INDEX, r9x_abi::SPAWN_BAD_INDEX);
+        assert_eq!(SPAWN_BAD_STATE, r9x_abi::SPAWN_BAD_STATE);
+        assert_eq!(SPAWN_NO_SLOT, r9x_abi::SPAWN_NO_SLOT);
+        // A valid process id is a table index (far below the bound), so the
+        // errors sit at or above `SPAWN_ERR_MIN`, distinct from every id.
+        const {
+            assert!(SPAWN_BAD_INDEX >= r9x_abi::SPAWN_ERR_MIN, "error collides with an id");
+        }
     }
 
     // The heap brk math: round-up to a page, monotonic page-granular growth,

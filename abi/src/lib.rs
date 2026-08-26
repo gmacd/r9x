@@ -105,3 +105,42 @@ pub const SYS_ALLOC: u64 = 22;
 /// coalesces holes in the middle of the heap is a refinement, not this.  Always
 /// returns 0.
 pub const SYS_FREE: u64 = 23;
+
+/// Spawn a process from the image registry.  arg0 = the image index, arg1 =
+/// a child-state VA (a page in the spawner's address space holding the child's
+/// `[n_handles, handles..., argc, argv...]`, or 0 for none), arg2 = the child's
+/// priority (0 most urgent; 255, the idle sentinel, is refused).  Result in
+/// arg0: the child's process id on success, or one of the `SPAWN_*` error
+/// codes — a bad index or a full process table is an error the spawner recovers
+/// from, not a fault.
+pub const SYS_SPAWN: u64 = 24;
+
+// `SYS_SPAWN` result codes.  A value below `SPAWN_ERR_MIN` is a process id
+// (a table index, 0..NPROCS, and NPROCS is far below the bound); at or above
+// it is one of these errors.  The spawner maps them back to its own errors.
+/// The minimum value that is an error rather than a process id.
+pub const SPAWN_ERR_MIN: u64 = 128;
+/// The image index is not in the registry (out of range, or the registry is
+/// empty — it is populated at boot, before any spawn can reference an index).
+pub const SPAWN_BAD_INDEX: u64 = 128;
+/// The process table is full (no free slot).
+pub const SPAWN_NO_SLOT: u64 = 129;
+/// The child-state or priority is malformed (too many handles, or the
+/// priority is the idle sentinel or above).
+pub const SPAWN_BAD_STATE: u64 = 130;
+
+/// The layout of the generalized `HANDLES_VA` page the spawner writes a
+/// child's state into (and the child reads from its first instruction):
+///
+///     [n_handles:u32 LE][handle:u32 LE ...][argc:u32 LE][argv ...]
+///
+/// `n_handles` counts the `handle` words that follow; `argc` (immediately
+/// after the last handle) is the byte length of the trailing `argv`.  The
+/// common case — a server handed a channel pair — is `n_handles = 2`,
+/// `argc = 0`, so the old `[in:4][out:4]` write survives as the two handles
+/// under a count.  A child with no state is a zero page (`n_handles = 0`).
+///
+/// The bound on the handle count: the rest of the page is argv.  A spawn whose
+/// `n_handles` exceeds it is refused (`SPAWN_BAD_STATE`) rather than read past
+/// the page.
+pub const SPAWN_MAX_HANDLES: usize = 512;

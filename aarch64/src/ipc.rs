@@ -205,9 +205,12 @@ impl IpcScheduler for KernSched {
 
 /// Read up to `dst.len()` bytes from the user buffer at `src` into `dst`.
 /// A no-op when `len` is 0 (the common case: an empty payload never touches
-/// user memory).
+/// user memory).  `pub(crate)`: the message syscalls and `SYS_SPAWN` (reading
+/// the spawner's child-state page) both run on this arc — during a `svc` the
+/// calling process's `TTBR0` is still installed, so its user VAs are
+/// reachable in EL1.
 #[cfg(target_os = "none")]
-unsafe fn copy_from_user(dst: &mut [u8], src: *const u8, len: usize) {
+pub(crate) unsafe fn copy_from_user(dst: &mut [u8], src: *const u8, len: usize) {
     let n = len.min(dst.len());
     if n == 0 {
         return;
