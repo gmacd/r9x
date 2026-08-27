@@ -153,5 +153,10 @@ name = "user_va"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "channel_close"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true

@@ -42,8 +42,8 @@ const REPLY_CH: u32 = 1;
 
 /// The client: level 16.  Sends a request on `REQ_CH` (opcode 1, tag 1),
 /// then blocks in receive for the reply on `REPLY_CH`, then exits 10.
-fn client_body() -> [u8; 56] {
-    let mut b = [0u8; 56];
+fn client_body() -> [u8; 60] {
+    let mut b = [0u8; 60];
     let mut i = 0;
     // SYCSEND: x8=2, x0=REQ_CH, x1=0, x2=0, x3=opcode 1, x4=tag 1.
     b[i..i + 4].copy_from_slice(&mov(8, process::SYCSEND as u32));
@@ -71,8 +71,11 @@ fn client_body() -> [u8; 56] {
     i += 4;
     b[i..i + 4].copy_from_slice(&SVC);
     i += 4;
-    // Exit with status 10.
-    b[i..i + 4].copy_from_slice(&mov(8, 10));
+    // Exit with status 10: x0 is the exit status (the SYCRECEIVE result
+    // clobbered it).
+    b[i..i + 4].copy_from_slice(&mov(0, 10));
+    i += 4;
+    b[i..i + 4].copy_from_slice(&mov(8, 0));
     i += 4;
     b[i..i + 4].copy_from_slice(&SVC);
     i += 4;
@@ -83,8 +86,10 @@ fn client_body() -> [u8; 56] {
 /// The server: level 200.  Blocks in receive for a request on `REQ_CH`,
 /// replies on `REPLY_CH` (opcode 2, tag 1), then blocks in receive for the
 /// next request (there is none, so it stays blocked and `run_all` ends).
-fn server_body() -> [u8; 68] {
-    let mut b = [0u8; 68];
+/// If the channel is closed (the client died), the receive returns and the
+/// server spins — it is a background process that must not fall off.
+fn server_body() -> [u8; 72] {
+    let mut b = [0u8; 72];
     let mut i = 0;
     // SYCRECEIVE: x8=17, x0=REQ_CH, x1=0, x2=0.
     b[i..i + 4].copy_from_slice(&mov(8, process::SYCRECEIVE as u32));
@@ -123,19 +128,26 @@ fn server_body() -> [u8; 68] {
     i += 4;
     b[i..i + 4].copy_from_slice(&SVC);
     i += 4;
+    // Spin: if the receive above returned (channel closed by the client's
+    // death), loop forever instead of falling off the end of the text.
+    b[i..i + 4].copy_from_slice(&[0x14, 0x00, 0x00, 0x00]); // b .
+    i += 4;
     assert_eq!(i, b.len());
     b
 }
 
 /// The busy process: level 128.  Yields once, then exits 12.
-fn busy_body() -> [u8; 16] {
-    let mut b = [0u8; 16];
+fn busy_body() -> [u8; 20] {
+    let mut b = [0u8; 20];
     let mut i = 0;
     b[i..i + 4].copy_from_slice(&mov(8, 1)); // yield
     i += 4;
     b[i..i + 4].copy_from_slice(&SVC);
     i += 4;
-    b[i..i + 4].copy_from_slice(&mov(8, 12)); // exit 12
+    // Exit 12: x0 is the exit status (the yield clobbered it).
+    b[i..i + 4].copy_from_slice(&mov(0, 12));
+    i += 4;
+    b[i..i + 4].copy_from_slice(&mov(8, 0));
     i += 4;
     b[i..i + 4].copy_from_slice(&SVC);
     i += 4;

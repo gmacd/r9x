@@ -10,6 +10,12 @@ use crate::sys::sys;
 /// The message payload bound the kernel enforces: a server sizes its receive
 /// buffer to this to accept a full message.
 pub use r9x_abi::MSG_MAX;
+/// The opcode a [`receive`](self::receive) returns in the first component
+/// when the channel's peer has died (the kernel closed it on process death):
+/// the client can tell "server gone" from a protocol error.  A `receive`
+/// that blocks for a reply and finds its channel closed returns this instead
+/// of hanging.
+pub use r9x_abi::RECEIVE_CLOSED;
 
 /// Create one channel.  Returns the channel handle (the kernel's error code on
 /// failure — the caller checks it against the kernel's success value).

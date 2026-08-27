@@ -202,6 +202,10 @@ pub const SPAWN_BAD_STATE: u64 = 130;
 /// kernel (the maximum `u16`); a protocol that sends a message with this
 /// opcode is ambiguous with a timeout and must not.
 pub const RECEIVE_TIMEOUT: u16 = 0xffff;
+/// The error code a `SYCRECEIVE` / `SYS_RECEIVE_AT` returns in arg0 when the
+/// channel's owner has died (the kernel closed it on process death): the
+/// peer is gone, not a protocol error.  Matches the kernel's `ERR_CLOSED`.
+pub const RECEIVE_CLOSED: u16 = 2;
 
 /// The layout of the generalized `HANDLES_VA` page the spawner writes a
 /// child's state into (and the child reads from its first instruction):

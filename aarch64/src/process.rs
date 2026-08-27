@@ -86,7 +86,7 @@ pub(crate) const CONTEXT_SZ: usize = 112;
 /// The table size.  A compile constant: the kstacks below are statics,
 /// so there is no allocation story.
 #[cfg(target_os = "none")]
-const NPROCS: usize = 8;
+pub(crate) const NPROCS: usize = 8;
 
 /// Each process's kernel stack: frame (304) + suspended call chains,
 /// 64 KiB, the same size as the interrupt stack (16 pages).
@@ -611,6 +611,19 @@ fn spawn_raw(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     let _user_stack = aspace
         .map_user_page(Entry::rw_user_data(), stack_va)
         .unwrap_or_else(|err| panic!("process stack page: {err:?}"));
+    // The handle page is mapped and seeded with channel handle 0 (word 1):
+    // raw images have no ELF header to carry the nameserver pair, so the
+    // kernel gives them the first channel so a test can use it.  Word 0 is
+    // the word count (1 = one channel handle follows).
+    let user_handles = aspace
+        .map_user_page(Entry::rw_user_data(), port::user::HANDLES_VA)
+        .unwrap_or_else(|err| panic!("process handle page: {err:?}"));
+    // SAFETY: user_handles is the mapped handle page (HANDLES_VA), valid and
+    // writable; words 0 and 1 are within the 4 KiB page.
+    unsafe {
+        core::ptr::write_volatile(user_handles as *mut u64, 1); // word count
+        core::ptr::write_volatile(user_handles.add(8) as *mut u64, 0); // channel 0
+    };
     // The user stack pointer leaves 16 bytes of headroom below the page's top
     // (the frame's SP must stay inside the page — see forkret_context).
     let user_sp = stack_va + mem::PAGE_SIZE_4K - 16;
@@ -1173,6 +1186,10 @@ pub(crate) fn exit_current(status: u64) -> ! {
         idx as u32
     };
     iprintln!("process {exited_id} exited, status {status}");
+    // Close the dead process's channels: a peer blocked on one of them wakes
+    // to `ERR_CLOSED` instead of blocking forever.  The table lock is released
+    // here, so the wake (which may reschedule) does not hold it.
+    crate::ipc::close_all_for(exited_id as usize);
 
     if !resched() {
         // No next Runnable: the last process.  Unwind run_all: switch
@@ -1388,6 +1405,10 @@ pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1) -> ! {
     } else {
         iprintln!("process {current_id} faulted: far {far:#x} {class} (esr {esr:?})");
     }
+    // Close the dead process's channels: a peer blocked on one of them wakes
+    // to `ERR_CLOSED` instead of blocking forever.  The table lock is
+    // released here, so the wake (which may reschedule) does not hold it.
+    crate::ipc::close_all_for(current_id);
 
     if !resched() {
         // No next Runnable: the last process.  Unwind run_all.
@@ -1740,14 +1761,25 @@ pub fn sys_kill(pid: u64) -> u64 {
         return KILL_BAD_ID;
     }
     let node = LockNode::new();
-    let mut table = TABLE.lock(&node);
-    match table.get_mut(id) {
-        Some(Some(p)) if p.state != State::Exited => {
+    let killed = {
+        let mut table = TABLE.lock(&node);
+        if let Some(Some(p)) = table.get_mut(id)
+            && p.state != State::Exited
+        {
             p.exit_status = KILL_STATUS;
             p.state = State::Exited;
-            0
+            true
+        } else {
+            false
         }
-        _ => KILL_BAD_ID,
+    };
+    if killed {
+        // Close the dead process's channels: a peer blocked on one of them
+        // wakes to `ERR_CLOSED`.  The table lock is released first.
+        crate::ipc::close_all_for(id);
+        0
+    } else {
+        KILL_BAD_ID
     }
 }
 

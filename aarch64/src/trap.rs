@@ -419,8 +419,13 @@ fn trap(frame: &mut TrapFrame) {
                     crate::trace::result(proc_id, syscall, result, 0, 0);
                     return;
                 }
-                // Exit and an unimplemented number both end the
-                // process, with the svc number as status.
+                process::SYSEXIT => {
+                    #[cfg(feature = "systrace")]
+                    crate::trace::result(proc_id, syscall, frame.x0, 0, 0);
+                    process::exit_current(frame.x0)
+                }
+                // An unimplemented number ends the process, with the svc
+                // number as status.
                 _ => process::exit_current(syscall),
             }
         }

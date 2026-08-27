@@ -38,8 +38,8 @@ const BAD_VA: u32 = 0x5000;
 /// A: `SYS_PRINT` with a bad pointer (returns `ERR_BAD_VA`, no fault), then
 /// `SYCSEND` with a bad buffer on channel 0 (returns `ERR_BAD_VA`, no fault),
 /// then exit 0.
-fn a_body() -> [u8; 52] {
-    let mut b = [0u8; 52];
+fn a_body() -> [u8; 56] {
+    let mut b = [0u8; 56];
     let mut i = 0;
     // SYS_PRINT: x8=31, x0=BAD_VA, x1=16.
     b[i..i + 4].copy_from_slice(&mov(8, process::SYS_PRINT as u32));
@@ -65,7 +65,9 @@ fn a_body() -> [u8; 52] {
     i += 4;
     b[i..i + 4].copy_from_slice(&SVC);
     i += 4;
-    // Exit 0.
+    // Exit 0: x0 is the exit status (the SYCSEND result clobbered it).
+    b[i..i + 4].copy_from_slice(&mov(0, 0));
+    i += 4;
     b[i..i + 4].copy_from_slice(&mov(8, 0));
     i += 4;
     b[i..i + 4].copy_from_slice(&SVC);

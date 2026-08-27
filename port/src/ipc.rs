@@ -194,6 +194,17 @@ impl Channel {
     pub fn owner(&self) -> ProcId {
         self.owner
     }
+
+    /// True if `id` is currently blocked on this channel (as the
+    /// `recv_waiter` or `send_waiter`).  Used by the close-on-death
+    /// hook: a dying process closes only the channels it is blocked
+    /// on, so a peer's pending operation wakes to `IpcErr::Closed`
+    /// instead of blocking forever.
+    pub fn is_blocked_on(&self, id: ProcId) -> bool {
+        let node = crate::mcslock::LockNode::new();
+        let inner = self.inner.lock(&node);
+        inner.recv_waiter == Some(id) || inner.send_waiter == Some(id)
+    }
 }
 
 /// Close the channel through `sched`: it is marked closed, a blocked receiver

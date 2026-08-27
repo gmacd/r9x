@@ -171,6 +171,29 @@ pub fn channel(handle: ChannelHandle) -> Option<&'static Channel> {
     Some(&CHANNELS[handle])
 }
 
+/// The channel handles each process holds: bit `h` is set when the process
+/// Close the channels a dying process is blocked on.  Called from the
+/// process-death paths (`exit_current`, the kill, the fault): for each
+/// channel, if the dead process is the `recv_waiter` or `send_waiter`,
+/// close the channel so the peer's pending operation wakes to
+/// `ERR_CLOSED` instead of blocking forever.
+///
+/// Only channels the process is *blocked on* are closed — channels it
+/// merely sent to or received from (and is no longer blocked on) are
+/// left alone.  A process that exits while blocked in `receive` closes
+/// that channel, waking the sender; a process that exits while blocked
+/// in `send` closes that channel, waking the receiver.  A process that
+/// exits while not blocked on any channel closes nothing.
+#[cfg(target_os = "none")]
+pub(crate) fn close_all_for(id: ProcId) {
+    let n = NUSED.load(Ordering::Acquire).min(NCHANNELS);
+    for ch in &CHANNELS[..n] {
+        if ch.is_blocked_on(id) {
+            ipc::close(&KernSched, ch);
+        }
+    }
+}
+
 /// The kernel scheduler: [`IpcScheduler`] bound to the process table and
 /// TPIDR.  `block` is always of the current process (the one in the blocking
 /// syscall); `wake`/`boost`/`unboost` are by id.
