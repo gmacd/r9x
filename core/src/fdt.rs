@@ -171,7 +171,10 @@ impl<'a> DeviceTree<'a> {
         let mut value_i = prop.value_start;
         let value_end = prop.value_start + prop.value_len;
         core::iter::from_fn(move || {
-            if value_i >= value_end {
+            // A property's value_len is not guaranteed to be a multiple of 4:
+            // stop at the property's end rather than over-reading past it and
+            // fabricating a trailing partial cell from adjacent data
+            if value_end - value_i < 4 {
                 return None;
             }
             let (start, end) = (value_i, value_i + 4);

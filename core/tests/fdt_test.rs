@@ -193,6 +193,46 @@ fn get_ranges() {
     );
 }
 
+/// A minimal hand-built DTB whose single property, "partial", has a 6-byte
+/// value: one full u32 cell (1) plus two trailing bytes.  The padding after
+/// the value is 0xAA, so an iterator that over-reads past the property's end
+/// yields a recognisably garbage final cell instead of a silent zero.
+///
+/// Layout (all values big-endian):
+///   0..40   header: magic, totalsize 96, off_dt_struct 40, off_dt_strings 84,
+///             off_mem_rsvmap 40, version 2, last_comp 14, boot_cpuid 0,
+///             size_dt_strings 12, size_dt_struct 44
+///   40..48  BEGIN_NODE ""
+///   48..60  PROP len 6 nameoff 1
+///   60..68  value 00 00 00 01 00 00, pad AA AA
+///   68..76  END_NODE ""
+///   76..84  END
+///   84..96  strings: "\0" "partial\0" (12 bytes incl. padding)
+const PARTIAL_PROP_DTB: &[u8] = &[
+    0xd0, 0x0d, 0xfe, 0xed, 0x00, 0x00, 0x00, 0x60, // magic, totalsize 96
+    0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x54, // off_dt_struct 40, off_dt_strings 84
+    0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x02, // off_mem_rsvmap 40, version 2
+    0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x00, // last_comp 14, boot_cpuid 0
+    0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x2c, // size_dt_strings 12, size_dt_struct 44
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // BEGIN_NODE ""
+    0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x06, // PROP len 6
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, //   nameoff 1, value cell 1
+    0x00, 0x00, 0xaa, 0xaa, 0x00, 0x00, 0x00, 0x02, // value tail, pad AA AA, END_NODE
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, //   name "", END token
+    0x00, 0x00, 0x00, 0x00, 0x00, b'p', b'a', b'r', // strings: "\0" "partial\0"
+    b't', b'i', b'a', b'l', 0x00, 0x00, 0x00, 0x00, //   + 3 padding bytes
+];
+
+#[test]
+fn u32_iter_stops_at_property_end() {
+    let dt = DeviceTree::new(PARTIAL_PROP_DTB).unwrap();
+    let root = dt.root().unwrap();
+    let prop = dt.property(&root, "partial").unwrap();
+
+    // The trailing two bytes must not be read as a cell
+    assert_eq!(dt.property_value_as_u32_iter(&prop).collect::<Vec<u32>>(), vec![1]);
+}
+
 #[test]
 fn get_translated_reg() {
     let dt = DeviceTree::new(TEST1_DTB).unwrap();
