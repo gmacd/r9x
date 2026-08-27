@@ -136,15 +136,19 @@ pub extern "C" fn main9(dtb_va: usize) {
     let con_out = u32::from_le_bytes(reply.buf[4..8].try_into().unwrap()) as usize;
     println!("resolved /dev/console: in={} out={}", con_in, con_out);
 
-    // Write: send a byte on the console server's inbound channel — the
-    // server writes it to the UART and replies R_OK.
+    // OP_WRITE: the payload is [reply_chan:4 LE][data:...].  The server
+    // writes the data to the UART and replies R_OK on our reply channel.
+    let reply_ch2 = ipc::create();
     let byte = b'x';
-    let write_req = Message::new(0, 2, &[byte]);
+    let mut write_payload = [0u8; 5];
+    write_payload[0..4].copy_from_slice(&(reply_ch2 as u32).to_le_bytes());
+    write_payload[4] = byte;
+    let write_req = Message::new(0, 2, &write_payload);
     let con_in_ch = ipc::channel(con_in).expect("con_in channel exists");
     try_send(&ipc::KernSched, con_in_ch, write_req).expect("write send");
     process::run_all();
-    let con_out_ch = ipc::channel(con_out).expect("con_out channel exists");
-    let reply = try_receive(&ipc::KernSched, con_out_ch)
+    let reply_ch2_handle = ipc::channel(reply_ch2).expect("reply channel exists");
+    let reply = try_receive(&ipc::KernSched, reply_ch2_handle)
         .unwrap_or_else(|e| panic!("namespace: write reply failed: {e:?}"));
     check!(reply.opcode == R_OK, "console write replied R_OK, got opcode {}", reply.opcode);
     println!("console write ok");

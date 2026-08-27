@@ -34,8 +34,10 @@ const MMIO_VA: u64 = 0x8000_0000;
 /// is the verb the server sends to publish its name; `R_OK` / `R_EFULL` are
 /// the results the nameserver replies.
 const OP_BIND: u16 = 0;
+const OP_WRITE: u16 = 0;
 const R_OK: u16 = 0;
 const R_EFULL: u16 = 2;
+const R_EINVAL: u16 = 3;
 
 /// The name the server publishes under.  Absolute, the way a file server's
 /// path is — the client resolves this, not a raw channel handle.
@@ -115,19 +117,35 @@ fn main() {
     let (op, _, _) = ipc::receive(reply_chan, &mut reply);
     let _ = (op == R_OK) || (op == R_EFULL);
 
-    // Persistent console loop: each message's payload is text to write to the
-    // UART.  Reply R_OK with no payload.  The console server never exits — it
-    // owns the terminal for the lifetime of the system.
+    // Persistent console loop: each message's payload is a write request.
+    // The first 4 bytes are the client's reply channel (LE); the rest is
+    // text to write to the UART.  Reply R_OK on the client's reply channel.
+    // The console server never exits — it owns the terminal for the
+    // lifetime of the system.
+    const UART0_FR: u64 = MMIO_VA + 0x18;
+    const TXFF: u32 = 1 << 5;
+    let fr = UART0_FR as *mut u32;
     let mut req_buf = [0u8; 256];
     loop {
-        let (_, bytes, tag) = ipc::receive(in_h, &mut req_buf);
-        let n = bytes.min(256);
-        // SAFETY: `dr` is the PL011 data register (Device-memory page).
-        unsafe {
-            for &b in &req_buf[..n] {
-                trace(dr, b);
-            }
-        };
-        ipc::reply(out_h, R_OK, tag, &[]);
+        let (op, bytes, tag) = ipc::receive(in_h, &mut req_buf);
+        if bytes < 4 {
+            continue;
+        }
+        let reply_h = u32::from_le_bytes(req_buf[0..4].try_into().unwrap()) as u64;
+        if op == OP_WRITE {
+            let data = &req_buf[4..bytes.min(256)];
+            // SAFETY: `dr` and `fr` are PL011 registers (Device-memory page).
+            unsafe {
+                for &b in data {
+                    // Spin while TXFF (FIFO full) is set: on real hardware
+                    // (Pi 4) the FIFO is 8 bytes; QEMU's model always has room.
+                    while core::ptr::read_volatile(fr) & TXFF != 0 {}
+                    trace(dr, b);
+                }
+            };
+            ipc::reply(reply_h, R_OK, tag, &[]);
+        } else {
+            ipc::reply(reply_h, R_EINVAL, tag, &[]);
+        }
     }
 }

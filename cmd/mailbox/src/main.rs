@@ -257,10 +257,17 @@ fn main() {
         let (op, _, _) = ipc::receive(reply2, &mut res_reply);
         if op == R_OK {
             let con_in = u32::from_le_bytes(res_reply[0..4].try_into().unwrap()) as u64;
+            // OP_WRITE protocol: payload = [reply_chan:4 LE][data:...].
+            // Use a dedicated reply channel so the console's R_OK comes
+            // back here, not on the shared out channel.
+            let write_reply = ipc::create_chan();
             let text = format!("Memory: {mem_base:#010x} ({mem_size:#x} bytes)\n");
-            let _ = ipc::send(con_in, 0, 0, text.as_bytes());
+            let mut payload = [0u8; 4 + 252];
+            payload[0..4].copy_from_slice(&(write_reply as u32).to_le_bytes());
+            payload[4..4 + text.len()].copy_from_slice(text.as_bytes());
+            let _ = ipc::send(con_in, 0, 0, &payload[..4 + text.len()]);
             let mut ack = [0u8; 4];
-            let _ = ipc::receive(out_h, &mut ack);
+            let _ = ipc::receive(write_reply, &mut ack);
         }
     }
 
