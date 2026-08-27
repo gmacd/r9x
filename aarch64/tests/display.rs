@@ -2,11 +2,30 @@
 //! software framebuffer, paces its frame loop with `SYS_RECEIVE_AT`, and
 //! writes a moving color bar.
 //!
-//! The image spawns the nameserver (so the display server can publish
-//! `/dev/display`) and the display server (handed the nameserver's handles),
-//! runs the system to a fixpoint, and checks that no process exited: a
-//! framebuffer allocation failure or a fault in the frame loop ends a
-//! process, so an all-alive table is the success.
+//! The image spawns the nameserver (so the servers can publish their
+//! names), the mailbox, display, and console servers, runs them to a
+//! fixpoint, then spawns the console client (a `consclient` test program
+//! handed the nameserver's handles) and runs to a fixpoint again, and checks
+//! that no process exited: a framebuffer allocation failure or a fault in
+//! the frame loop ends a process, so an all-alive table is the success.
+//!
+//! The client's job is the "display passed" verdict line: it writes it
+//! through the console server (`r9x_std::console`), the way the init
+//! process will once it moves to user space — not through the kernel's
+//! print path.  The image's own diagnostics still go over `SYS_PRINT`; only
+//! the verdict takes the terminal path.
+//!
+//! The bringup is phased, on purpose: the client resolves `/dev/console` by
+//! name on its first write and does not retry a not-yet-bound name, so it is
+//! spawned and run only after the servers have reached fixpoint (the console
+//! server has bound the name and is in its serve loop).  That guarantees the
+//! name is present, with no dependence on scheduler interleaving — the same
+//! phased bringup the `namespace` image uses.
+//!
+//! The channel budget is exact: nameserver 2, mailbox 5, display 5, console
+//! server 3, client 1 — sixteen, the `NCHANNELS` limit.  A channel created
+//! for the client's own use (instead of reusing its console reply channel
+//! to block on) would overflow it.
 //!
 //! The display server's frame loop is infinite (it never exits).  It blocks
 //! on the pacing channel's deadline (`SYS_RECEIVE_AT`) between frames, so the
@@ -31,6 +50,10 @@ static DISPLAY_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/display.el
 static NAMESERVER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nameserver.elf"));
 /// The built mailbox server's ELF, embedded.
 static MAILBOX_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mailbox.elf"));
+/// The built console server's ELF, embedded.
+static CONSOLE_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/console.elf"));
+/// The built console client's ELF, embedded.
+static CONSCCLIENT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/consclient.elf"));
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main9(dtb_va: usize) {
@@ -85,15 +108,55 @@ pub extern "C" fn main9(dtb_va: usize) {
     };
     process::spawn(&process::Image::Elf { bytes: DISPLAY_ELF, handles: Some(display_handles) });
 
+    // The console server: owns the terminal.  The nameserver's handles go in
+    // the extra fields (it makes its own pair for serving).
+    process::spawn(&process::Image::Elf {
+        bytes: CONSOLE_ELF,
+        handles: Some(process::Handles {
+            inbound: 0,
+            outbound: 0,
+            ns_inbound: ns_in as u32,
+            ns_outbound: ns_out as u32,
+        }),
+    });
+
+    // Phase 1: the servers.  Run to fixpoint: the console server has bound
+    // `/dev/console` and is in its serve loop; the mailbox and display
+    // servers are up.
+    process::run_all();
+    println!("servers at fixpoint; spawning the client");
+
+    // Phase 2: the console client, now that the console is bound — its
+    // `RESOLVE /dev/console` is guaranteed to find the name, with no
+    // dependence on scheduler ordering (the same phased bringup the
+    // `namespace` image uses).  It writes the "display passed" verdict
+    // through the console server, then blocks alive on its own console reply
+    // channel.
+    process::spawn(&process::Image::Elf {
+        bytes: CONSCCLIENT_ELF,
+        handles: Some(process::Handles {
+            inbound: 0,
+            outbound: 0,
+            ns_inbound: ns_in as u32,
+            ns_outbound: ns_out as u32,
+        }),
+    });
+
     process::run_all();
 
     println!("any_exited {}", process::any_exited());
     // No process exited: the display server's frame buffer allocation
     // succeeded, the frame loop is running (blocked on the pacing deadline),
-    // and the nameserver processed the BIND.  A fault or a panic (a failed
-    // allocation) ends a process, so an exited process is the failure.
-    check!(!process::any_exited(), "no process exited (the display server is running)");
+    // the console client wrote its verdict and is blocked alive (a failed
+    // write would have ended it), and the nameserver processed the BINDs.
+    // A fault or a panic (a failed allocation) ends a process, so an exited
+    // process is the failure.
+    check!(
+        !process::any_exited(),
+        "no process exited (the display server and console client are running)"
+    );
 
-    println!("display passed");
+    // The verdict line itself is on the terminal: the console client wrote
+    // it through the console server, not over this image's print path.
     qemu::exit(qemu::PASS);
 }

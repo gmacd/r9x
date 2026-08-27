@@ -23,6 +23,10 @@ extern crate alloc;
 /// The compiler's memory builtins (`memcpy` / `memset` / `memcmp`), which a
 /// target whose `os` is not `"none"` must provide itself.
 pub mod builtin;
+/// Writing to the console server — the user-space driver that owns the
+/// terminal: resolve `/dev/console` by name, send `OP_WRITE` messages, and
+/// receive the `R_OK` on this process's own reply channel.
+pub mod console;
 /// The thin syscall core and the message wrappers over it: the only part of
 /// r9 that needs a per-architecture shim.
 pub mod ipc;

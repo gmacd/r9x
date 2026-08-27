@@ -163,5 +163,10 @@ name = "faultbacktrace"
 harness = false
 required-features = ["qemu-test"]
 
+[[test]]
+name = "two_clients"
+harness = false
+required-features = ["qemu-test"]
+
 [lints]
 workspace = true

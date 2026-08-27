@@ -1,0 +1,25 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "consclient"
+version = "0.1.0"
+edition = "2024"
+default-target = "aarch64-unknown-none"
+
+# The console client: the test user program for `r9x_std::console`.  It
+# writes its line through the console server (the first write resolves
+# `/dev/console` through the nameserver), blocks alive, and — when the
+# spawner handed it a report pair — reports the successful write back to
+# the image over that pair.  The `display` and `two_clients` images use it.
+#
+# Aarch64-only for the arc, as the other servers are.  Built by `cargo
+# xtask` (ServerStep), not by a bare `cargo build`.
+#
+# Links `r9x_std`, the curated r9 facade (the syscall core, the runtime
+# entry, the kernel-backed heap, and the console client API).
+
+[dependencies]
+r9x-std = { path = "../../std" }
+
+[lints]
+workspace = true
