@@ -54,8 +54,8 @@ const TAG_GET_BOARD_MAC: u32 = 0x0001_0003;
 const TAG_GET_BOARD_SERIAL: u32 = 0x0001_0004;
 const OP_CONFIGURE_FB: u16 = 0;
 const OP_GET_PROPERTY: u16 = 1;
-const OP_BIND: u16 = 0;
-const OP_RESOLVE: u16 = 1;
+const NS_BIND: u16 = 0;
+const NS_RESOLVE: u16 = 1;
 const R_OK: u16 = 0;
 const NAME: &[u8] = b"/dev/mailbox";
 const CONSOLE_NAME: &[u8] = b"/dev/console";
@@ -231,7 +231,7 @@ fn main() {
             4,
         );
     };
-    let _ = ipc::send(ns_in, OP_BIND, 0, &req);
+    let _ = ipc::send(ns_in, NS_BIND, 0, &req);
     let mut reply = [0u8; 8];
     let _ = ipc::receive(reply_chan, &mut reply);
 
@@ -252,7 +252,7 @@ fn main() {
                 4,
             );
         };
-        let _ = ipc::send(ns_in, OP_RESOLVE, 0, &res_req);
+        let _ = ipc::send(ns_in, NS_RESOLVE, 0, &res_req);
         let mut res_reply = [0u8; 8];
         let (op, _, _) = ipc::receive(reply2, &mut res_reply);
         if op == R_OK {
