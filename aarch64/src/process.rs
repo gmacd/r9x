@@ -599,13 +599,18 @@ pub fn spawn(image: &Image) -> ProcessId {
 #[cfg(target_os = "none")]
 fn spawn_raw(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     let aspace = crate::aspace::Aspace::new();
-    let user_text = aspace
-        .map_user_page(Entry::rw_user_text(), text_va)
+    // `map_user_page` returns the kernel identity pointer (TTBR1 alias),
+    // not the user VA: the text copy goes through the kernel mapping
+    // (`rw_kernel_data`), which is writable even though the TTBR0 entry
+    // is RO+X.
+    let ktext = aspace
+        .map_user_page(Entry::ro_user_text(), text_va)
         .unwrap_or_else(|err| panic!("process text page: {err:?}"));
     assert!(text.len() <= mem::PAGE_SIZE_4K, "text too large for one page");
-    // SAFETY: user_text is the mapped text page (text_va), valid and
-    // writable, and text.len() bytes fit in the 4 KiB page (asserted above).
-    unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), user_text, text.len()) };
+    // SAFETY: ktext is the TTBR1 kernel identity pointer for the text page,
+    // valid and writable (`rw_kernel_data`), and text.len() bytes fit in
+    // the 4 KiB page (asserted above).
+    unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), ktext, text.len()) };
     // The stack page itself is mapped and then leaked: the user stack
     // pointer is the only thing the kernel keeps of it.
     let _user_stack = aspace
@@ -728,7 +733,7 @@ fn load_elf(bytes: &[u8]) -> LoadedElf {
     // the user VA — so the copy goes through it, page by page.
     let aspace = crate::aspace::Aspace::new();
     for seg in segs {
-        let entry = if seg.exec { Entry::rw_user_text() } else { Entry::rw_user_data() };
+        let entry = if seg.exec { Entry::ro_user_text() } else { Entry::rw_user_data() };
         let vaddr = seg.vaddr as usize;
         let filesz = seg.filesz as usize;
         let memsz = seg.memsz as usize;

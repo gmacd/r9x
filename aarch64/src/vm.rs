@@ -178,9 +178,12 @@ impl Entry {
             .with_valid(true)
     }
 
-    pub fn rw_user_text() -> Self {
+    /// User text: RO + X for EL0, PXN (EL1 must never execute user pages).
+    /// The kernel writes text via the TTBR1 alias (`rw_kernel_data`), not
+    /// through this mapping, so RO here does not break the load path.
+    pub fn ro_user_text() -> Self {
         Entry(0)
-            .with_access_permission(AccessPermission::AllRw)
+            .with_access_permission(AccessPermission::AllRo)
             .with_shareable(Shareable::Inner)
             .with_accessed(true)
             .with_uxn(false)
