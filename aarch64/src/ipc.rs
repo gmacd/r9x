@@ -214,39 +214,55 @@ impl IpcScheduler for KernSched {
     }
 }
 
-/// Read up to `dst.len()` bytes from the user buffer at `src` into `dst`.
-/// A no-op when `len` is 0 (the common case: an empty payload never touches
-/// user memory).  `pub(crate)`: the message syscalls and `SYS_SPAWN` (reading
-/// the spawner's child-state page) both run on this arc — during a `svc` the
-/// calling process's `TTBR0` is still installed, so its user VAs are
-/// reachable in EL1.
+/// Read up to `len` bytes from the user buffer at `src` into `dst`, first
+/// validating the range with a software walk of the process's `TTBR0` (which
+/// reads the table entries in kernel memory and never touches the user VA, so
+/// it cannot fault).  Returns true when the copy happened, false when the
+/// range was not a mapped, readable, user-accessible range (no copy).  A
+/// no-op (true) when `len` is 0 (the common case: an empty payload never
+/// touches user memory).
+///
+/// `pub(crate)`: the message syscalls and `SYS_SPAWN` (reading the spawner's
+/// child-state page) both run on this arc — during a `svc` the calling
+/// process's `TTBR0` is still installed, so its user VAs are reachable in EL1;
+/// the walk turns a bad pointer from user space into an error return rather
+/// than a kernel data abort.
 #[cfg(target_os = "none")]
-pub(crate) unsafe fn copy_from_user(dst: &mut [u8], src: *const u8, len: usize) {
+pub(crate) unsafe fn read_user(dst: &mut [u8], src: *const u8, len: usize) -> bool {
     let n = len.min(dst.len());
     if n == 0 {
-        return;
+        return true;
     }
-    // SAFETY: `src` is a user VA, mapped read-only and reachable in EL1 this
-    // arc (every process shares the user page table); `dst` is a kernel
-    // buffer of at least `n` bytes; the regions are disjoint (user vs kernel
-    // VA).  A faulting pointer is a user bug the test images do not produce.
+    if !crate::vm::user_range_ok(src as usize, n, false) {
+        return false;
+    }
+    // SAFETY: `user_range_ok` confirmed the range is mapped, readable, and
+    // user-accessible; `dst` is a kernel buffer of at least `n` bytes; the
+    // regions are disjoint (user vs kernel VA).
     unsafe { core::ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), n) };
+    true
 }
 
-/// Write up to `len` bytes from `src` to the user buffer at `dst`; returns
-/// the bytes written.  A no-op (0 written) when `src` is empty or `len` is 0.
+/// Write up to `len` bytes from `src` to the user buffer at `dst`, first
+/// validating the range with a software walk of the process's `TTBR0` (which
+/// reads the table entries in kernel memory and never touches the user VA, so
+/// it cannot fault).  Returns the bytes written, or None when the range was
+/// not a mapped, writable, user-accessible range (no copy).  A no-op (0
+/// written) when `src` is empty or `len` is 0.
 #[cfg(target_os = "none")]
-unsafe fn copy_to_user(dst: *mut u8, src: &[u8], len: usize) -> usize {
+unsafe fn write_user(dst: *mut u8, src: &[u8], len: usize) -> Option<usize> {
     let n = len.min(src.len());
     if n == 0 {
-        return 0;
+        return Some(0);
     }
-    // SAFETY: `dst` is a user VA, mapped read-write and reachable in EL1 this
-    // arc; `src` is a kernel buffer of at least `n` bytes; the regions are
-    // disjoint (user vs kernel VA).  A faulting pointer is a user bug the
-    // test images do not produce.
+    if !crate::vm::user_range_ok(dst as usize, n, true) {
+        return None;
+    }
+    // SAFETY: `user_range_ok` confirmed the range is mapped, writable, and
+    // user-accessible; `src` is a kernel buffer of at least `n` bytes; the
+    // regions are disjoint (user vs kernel VA).
     unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst, n) };
-    n
+    Some(n)
 }
 
 /// A syscall result code in x0: 0 is success, the rest are the
@@ -271,6 +287,11 @@ const ERR_ALREADY_CLAIMED: u64 = 7;
 const ERR_NO_SLOT: u64 = 8;
 #[cfg(target_os = "none")]
 const ERR_BAD_KIND: u64 = 9;
+/// The user buffer pointer named by the syscall is not a mapped, accessible
+/// user range (an unmapped VA, a kernel-half VA, or a kernel-only mapping):
+/// the copy is refused and the buffer left untouched.
+#[cfg(target_os = "none")]
+const ERR_BAD_VA: u64 = 10;
 
 #[cfg(target_os = "none")]
 fn err_code(e: IpcErr) -> u64 {
@@ -455,7 +476,11 @@ pub(crate) fn sys_receive_at(
                 // The timeout: the deadline beat the message.  No payload.
                 return (RECEIVE_TIMEOUT as u64, 0, 0);
             }
-            let n = unsafe { copy_to_user(buf, &msg.buf, (msg.len as usize).min(cap as usize)) };
+            let written =
+                unsafe { write_user(buf, &msg.buf, (msg.len as usize).min(cap as usize)) };
+            let Some(n) = written else {
+                return (ERR_BAD_VA, 0, 0);
+            };
             (msg.opcode as u64, n as u64, msg.tag as u64)
         }
         Err(e) => (err_code(e), 0, 0),
@@ -486,7 +511,9 @@ pub(crate) fn sys_send(handle: u64, buf: *const u8, len: u64, opcode: u64, tag: 
     };
     let n = (len as usize).min(MSG_MAX);
     let mut data = [0u8; MSG_MAX];
-    unsafe { copy_from_user(&mut data, buf, n) };
+    if !unsafe { read_user(&mut data, buf, n) } {
+        return ERR_BAD_VA;
+    }
     let msg = Message::new(opcode as u16, tag as u32, &data[..n]);
     match ipc::send(&KernSched, ch, msg) {
         Ok(()) => OK,
@@ -508,7 +535,11 @@ pub(crate) fn sys_receive(handle: u64, buf: *mut u8, cap: u64) -> (u64, u64, u64
             // the full `MSG_MAX` buffer: the receiver's `bytes` return is the
             // payload length, and a protocol that reads `buf[..bytes]` would
             // see trailing zeros if the full buffer were copied.
-            let n = unsafe { copy_to_user(buf, &msg.buf, (msg.len as usize).min(cap as usize)) };
+            let written =
+                unsafe { write_user(buf, &msg.buf, (msg.len as usize).min(cap as usize)) };
+            let Some(n) = written else {
+                return (ERR_BAD_VA, 0, 0);
+            };
             (msg.opcode as u64, n as u64, msg.tag as u64)
         }
         Err(e) => (err_code(e), 0, 0),
@@ -525,7 +556,9 @@ pub(crate) fn sys_reply(handle: u64, buf: *const u8, len: u64, opcode: u64, tag:
     };
     let n = (len as usize).min(MSG_MAX);
     let mut data = [0u8; MSG_MAX];
-    unsafe { copy_from_user(&mut data, buf, n) };
+    if !unsafe { read_user(&mut data, buf, n) } {
+        return ERR_BAD_VA;
+    }
 
     let msg = Message::new(opcode as u16, tag as u32, &data[..n]);
     match ipc::reply(&KernSched, ch, tag as u32, msg) {
@@ -609,11 +642,11 @@ pub(crate) fn sys_print(va: u64, len: u64) -> u64 {
     let buf = &mut [0u8; MAX];
     if n > 0 {
         let n = n.min(MAX);
-        // SAFETY: `va` is a user VA, mapped read-only and reachable in EL1
-        // this arc (the calling process's TTBR0 is still installed);
-        // `buf` is a kernel buffer of at least `n` bytes; the regions are
-        // disjoint (user vs kernel VA).
-        unsafe { copy_from_user(&mut buf[..n], va as *const u8, n) };
+        // The string buffer must be a mapped, readable user range: a bad
+        // pointer is an error return, not a kernel data abort.
+        if !unsafe { read_user(&mut buf[..n], va as *const u8, n) } {
+            return ERR_BAD_VA;
+        }
         for b in &buf[..n] {
             crate::devcons::iputb(*b);
         }

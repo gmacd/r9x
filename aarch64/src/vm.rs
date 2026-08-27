@@ -546,6 +546,90 @@ pub fn root_page_table(pgtype: RootPageTableType) -> &'static mut RootPageTable 
     unsafe { &mut *physaddr_as_ptr_mut_offset_from_kzero::<RootPageTable>(page_table_pa) }
 }
 
+/// Check that the user range `[va, va+len)` is mapped and user-accessible for
+/// the given direction, by software-walking the current process's TTBR0
+/// tables.  Returns true only if every page the range touches has a valid
+/// leaf that is user-readable (and user-writable when `for_write`).
+///
+/// The walk reads the table entries (never the user VA), so it cannot fault
+/// — it *is* the check.  Used by the syscall layer to validate a user buffer
+/// before copying through it, so a bad pointer from user space is an error
+/// return rather than a kernel data abort.
+#[cfg(target_os = "none")]
+pub fn user_range_ok(va: usize, len: usize, for_write: bool) -> bool {
+    // Bounds: the whole range must sit in the user half (a cheap mask check
+    // before the walk; a kernel-half VA is rejected without touching tables).
+    let Some(end) = va.checked_add(len) else {
+        return false;
+    };
+    if end > KZERO {
+        return false;
+    }
+    if len == 0 {
+        return true;
+    }
+    // Walk every page the range touches: each must have a valid, user-accessible
+    // leaf, or the range is not safe to copy through.
+    let mut page = va & !(PAGE_SIZE_4K - 1);
+    while page < end {
+        match user_leaf_entry(page) {
+            Some(entry) if entry_user_ok(entry, for_write) => {}
+            _ => return false,
+        }
+        page = page.wrapping_add(PAGE_SIZE_4K);
+    }
+    true
+}
+
+/// Walk the current process's TTBR0 tables for `va` and return the leaf
+/// entry, or None if any level is unmapped.  Reads table entries (never the
+/// user VA) so it cannot fault.  The root table is read through its KZERO
+/// identity mapping (it lives in the kernel's data section); the
+/// intermediate, runtime-allocated tables are reached through the recursive
+/// VA — the same path `next_mut` walks — because those pages are not
+/// identity-mapped in TTBR1.  A block descriptor at any level is a leaf: the
+/// index match places `va` inside the block's range, so the block's
+/// attributes apply.
+#[cfg(target_os = "none")]
+fn user_leaf_entry(va: usize) -> Option<Entry> {
+    let mut table: *mut Table = root_page_table(RootPageTableType::User) as *mut Table;
+    for level in [Level::Level0, Level::Level1, Level::Level2] {
+        let idx = va_index(va, level);
+        // SAFETY: `table` is a live page table (the root through KZERO, the
+        // rest through the recursive VA, both of which the kernel itself
+        // derefs); the entry read is in-bounds ([0, 512)).
+        let entry = unsafe { (*table).entries[idx] };
+        if !entry.valid() {
+            return None;
+        }
+        if !entry.is_table(level) {
+            return Some(entry);
+        }
+        // The next table, through the recursive VA: the runtime-allocated
+        // table pages are not identity-mapped in TTBR1, so the KZERO offset
+        // would fault where the recursive VA does not.
+        let next_level = level.next().unwrap();
+        table = recursive_table_addr(RootPageTableType::User, va, next_level) as *mut Table;
+    }
+    let idx = va_index(va, Level::Level3);
+    // SAFETY: as above — `table` is a live page table reached through the
+    // recursive VA.
+    let entry = unsafe { (*table).entries[idx] };
+    entry.valid().then_some(entry)
+}
+
+/// Check a leaf entry permits a user (EL0) access in the given direction:
+/// user read/write (AllRw) allows both; user read-only (AllRo) allows reads;
+/// the privileged-only permissions (Priv*) deny user access entirely.
+#[cfg(target_os = "none")]
+fn entry_user_ok(entry: Entry, for_write: bool) -> bool {
+    match entry.access_permission() {
+        AccessPermission::AllRw => true,
+        AccessPermission::AllRo => !for_write,
+        AccessPermission::PrivRw | AccessPermission::PrivRo => false,
+    }
+}
+
 /// Write the recursive entry into the statically allocated user root page
 /// table.
 ///

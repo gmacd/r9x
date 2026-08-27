@@ -817,7 +817,7 @@ fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
 ///
 /// The spawner's child-state page is read through the spawner's `TTBR0`
 /// (installed during the syscall, so the spawner's user VAs are reachable in
-/// EL1 — the same arc `copy_from_user` runs on) and written to the child's
+/// EL1 — the same arc `read_user` runs on) and written to the child's
 /// `HANDLES_VA` page through the child's `TTBR1` (the identity map the kernel
 /// runs in).  The child reads its state from the very first instruction.  All
 /// the checks that can refuse a spawn (the index, the priority, the
@@ -841,7 +841,12 @@ pub(crate) fn sys_spawn(index: u64, state_va: u64, prio: u64) -> u64 {
     // more is malformed.  Checked before any mapping.
     let mut state = [0u8; mem::PAGE_SIZE_4K];
     if state_va != 0 {
-        unsafe { crate::ipc::copy_from_user(&mut state, state_va as *const u8, mem::PAGE_SIZE_4K) };
+        // The child-state page must be a mapped, readable page in the
+        // spawner's address space: a bad VA is a refused spawn, not a kernel
+        // data abort.
+        if !unsafe { crate::ipc::read_user(&mut state, state_va as *const u8, mem::PAGE_SIZE_4K) } {
+            return SPAWN_BAD_STATE;
+        }
         let n_handles = u32::from_le_bytes(state[0..4].try_into().unwrap()) as usize;
         if n_handles > SPAWN_MAX_HANDLES {
             return SPAWN_BAD_STATE;
