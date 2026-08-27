@@ -436,7 +436,13 @@ fn trap(frame: &mut TrapFrame) {
         Ok(ExceptionClass::DataAbortLowerEl | ExceptionClass::InstructionAbortLowerEl)
             if exc == ExceptionType::SyncInvalidEL0_64 =>
         {
-            process::fault(frame.far_el1, frame.esr_el1);
+            process::fault(
+                frame.far_el1,
+                frame.esr_el1,
+                frame.sp,
+                frame.frame_pointer,
+                frame.link_register,
+            );
         }
         _ => {
             // Synchronous exception (data abort, instruction abort, etc.)

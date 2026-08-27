@@ -1356,7 +1356,7 @@ fn switch_out(demote_to: State) -> bool {
 /// kernel fault: print and spin.  This arc has no demand-paging, so every EL0
 /// fault is a kill (the fix path is a later change to this one function).
 #[cfg(target_os = "none")]
-pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1) -> ! {
+pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1, sp: u64, fp: u64, lr: u64) -> ! {
     let current = unsafe { tpidr_current() };
     if current.is_null() {
         let class = esr.fault_status_str();
@@ -1410,6 +1410,7 @@ pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1) -> ! {
     } else {
         iprintln!("process {current_id} faulted: far {far:#x} {class} (esr {esr:?})");
     }
+    crate::backtrace::print_backtrace(sp, fp, lr);
     // Close the dead process's channels: a peer blocked on one of them wakes
     // to `ERR_CLOSED` instead of blocking forever.  The table lock is
     // released here, so the wake (which may reschedule) does not hold it.
@@ -1709,7 +1710,13 @@ pub(crate) fn sys_spawn(_index: u64, _state_va: u64, _prio: u64) -> u64 {
 }
 
 #[cfg(not(target_os = "none"))]
-pub(crate) fn fault(_far: u64, _esr: crate::reg::esr_el1::EsrEl1) -> ! {
+pub(crate) fn fault(
+    _far: u64,
+    _esr: crate::reg::esr_el1::EsrEl1,
+    _sp: u64,
+    _fp: u64,
+    _lr: u64,
+) -> ! {
     loop {
         core::hint::spin_loop();
     }

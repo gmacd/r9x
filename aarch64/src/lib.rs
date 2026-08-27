@@ -13,6 +13,8 @@
 
 pub mod allocator;
 pub mod aspace;
+#[cfg(target_os = "none")]
+pub mod backtrace;
 pub mod boot;
 pub mod devcons;
 pub mod deviceutil;
