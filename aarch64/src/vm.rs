@@ -453,26 +453,46 @@ impl RootPageTable {
                 .next_mut(page_allocator, vmtrait_impl, pgtype, Level::Level0, va)
                 .and_then(|t1| t1.entry_mut(Level::Level1, va)),
         };
-        let dest_entry = match dest_entry {
-            Ok(e) => e,
+
+        // The walk may have run the page allocator dry: whatever the outcome,
+        // the caller's recursive entry (entry 511 of the *live* root) must be
+        // restored before returning.  Mapping a non-live root — exactly what
+        // `map_user_page` does into a child `Aspace` — swaps the caller's
+        // entry 511 for the target's, so a failure that skipped the restore
+        // would leave every later recursive access from the caller walking the
+        // target's tree.  The restore therefore brackets the write unconditionally.
+        let result = match dest_entry {
+            Ok(dest_entry) => {
+                // Entries at level 3 should have the page flag set
+                let entry = if page_size == PageSize::Page4K {
+                    entry.with_page_or_table(true)
+                } else {
+                    entry
+                };
+                vmtrait_impl.write_entry(dest_entry, entry);
+                // Read the slot back: a write that does not stick (a table or
+                // TLB inconsistency) would silently leave the VA unmapped, so
+                // verify it is valid and holds the physical address we wrote.
+                let written = *dest_entry;
+                debug_assert!(
+                    written.valid() && written.phys_addr() == entry.phys_addr(),
+                    "map_to: slot read-back mismatch (va {va:#x}): wrote phys {:?}, read {written:?}",
+                    entry.phys_addr()
+                );
+                Ok(())
+            }
             Err(err) => {
                 iprintln!(
                     "error:vm:map_to:couldn't find page table entry. va:{:#x} err:{:?}",
                     va,
                     err
                 );
-                return Err(err);
+                Err(err)
             }
         };
-
-        // Entries at level 3 should have the page flag set
-        let entry =
-            if page_size == PageSize::Page4K { entry.with_page_or_table(true) } else { entry };
-
-        vmtrait_impl.write_entry(dest_entry, entry);
         vmtrait_impl.write_recursive_entry(pgtype, old_recursive_entry);
 
-        Ok(())
+        result
     }
 
     /// Map the physical range using the requested page size.
@@ -959,6 +979,32 @@ mod tests {
         }
     }
 
+    /// A page allocator that runs dry after two pages: a 4K `map_to` needs
+    /// three table pages (levels 0-2), so this forces an out-of-space
+    /// mid-walk.
+    struct DryPageAllocator {
+        pages: [PhysPage4K; 2],
+        next: usize,
+    }
+
+    impl DryPageAllocator {
+        fn new() -> Self {
+            Self { pages: core::array::from_fn(|_| PhysPage4K([0u8; PAGE_SIZE_4K])), next: 0 }
+        }
+    }
+
+    impl PageAllocator for DryPageAllocator {
+        fn alloc_physpage(&mut self) -> Result<PhysAddr, PageAllocError> {
+            if self.next < self.pages.len() {
+                let p = &self.pages[self.next];
+                self.next += 1;
+                Ok(PhysAddr::new(p as *const PhysPage4K as u64))
+            } else {
+                Err(PageAllocError::OutOfSpace)
+            }
+        }
+    }
+
     #[test]
     fn map_phys_range_test() {
         let mut table = RootPageTable::empty();
@@ -979,5 +1025,36 @@ mod tests {
             .expect("error:init:mapping failed");
 
         assert_eq!(mapped_virtrange, VirtRange::new(KZERO + 4096, KZERO + 8 * 4096));
+    }
+
+    // `map_to` swaps the caller's recursive entry (the live root's entry 511)
+    // for the target's for the duration of the walk.  When the walk runs the
+    // allocator dry, the error path must still restore the caller's entry —
+    // mapping a non-live root (a child `Aspace`) swaps the caller's entry, so
+    // skipping the restore would leave every later recursive access from the
+    // caller walking the target's tree.
+    #[test]
+    fn map_to_runs_dry_restores_recursive_entry() {
+        let mut table = RootPageTable::empty();
+        let mut allocator = DryPageAllocator::new();
+        let mut vmtrait = TestVmTrait::new();
+        // The caller's recursive entry: a sentinel that must survive the walk.
+        let sentinel = Entry::rw_kernel_data().with_phys_addr(PhysAddr::new(0xdead_0000));
+        vmtrait.root_page_table.entries[511] = sentinel;
+
+        // A 4K mapping needs three table pages; the allocator has two, so the
+        // walk runs dry at level 2.
+        let res = table.map_to(
+            &mut allocator,
+            &mut vmtrait,
+            Entry::rw_kernel_data().with_phys_addr(PhysAddr::new(0x1000)),
+            0x1000,
+            PageSize::Page4K,
+            RootPageTableType::Kernel,
+        );
+        // (a) the error is returned.
+        assert!(matches!(res, Err(PageTableError::AllocationFailed(_))));
+        // (b) the caller's recursive entry is restored (still the sentinel).
+        assert_eq!(vmtrait.root_page_table.entries[511], sentinel);
     }
 }
