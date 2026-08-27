@@ -25,7 +25,6 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
-use r9x_abi::{FB_HEIGHT, FB_SIZE, FB_VA, FB_WIDTH};
 use r9x_std::ipc;
 use r9x_std::mem;
 use r9x_std::println;
@@ -54,6 +53,20 @@ const MBOX_NAME: &[u8] = b"/dev/mailbox";
 
 /// The name the server publishes under.
 const NAME: &[u8] = b"/dev/display";
+
+/// The framebuffer's virtual address in user space.  The display server
+/// writes pixels here.  Chosen to be in the user half, clear of the image
+/// (at `IMAGE_BASE`) and its stack, and clear of `HANDLES_VA`.
+const FB_VA: usize = 0x4000_0000;
+
+/// The framebuffer's width in pixels.
+const FB_WIDTH: usize = 640;
+
+/// The framebuffer's height in pixels.
+const FB_HEIGHT: usize = 480;
+
+/// The framebuffer's size in bytes (width × height × 4 bytes/pixel RGBA).
+const FB_SIZE: usize = FB_WIDTH * FB_HEIGHT * 4;
 
 /// The entry point.
 #[inline(never)]

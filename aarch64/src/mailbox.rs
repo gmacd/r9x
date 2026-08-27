@@ -329,15 +329,6 @@ pub fn get_board_serial() -> u64 {
 /// Zero when the framebuffer is not configured.
 static FB_PHYS: AtomicU64 = AtomicU64::new(0);
 
-/// Return the framebuffer's physical range, or `None` if not configured.
-pub fn fb_range() -> Option<PhysRange> {
-    let start = FB_PHYS.load(Ordering::SeqCst);
-    if start == 0 {
-        return None;
-    }
-    Some(PhysRange::new(PhysAddr::new(start), PhysAddr::new(start + r9x_abi::FB_SIZE as u64)))
-}
-
 /// Configure the VideoCore framebuffer via the Mailbox property interface.
 ///
 /// The QEMU firmware (and the real Pi firmware) copies the current config

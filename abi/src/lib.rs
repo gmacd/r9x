@@ -222,17 +222,3 @@ pub const RECEIVE_CLOSED: u16 = 2;
 /// `n_handles` exceeds it is refused (`SPAWN_BAD_STATE`) rather than read past
 /// the page.
 pub const SPAWN_MAX_HANDLES: usize = 512;
-
-/// The framebuffer's virtual address in user space.  The display server
-/// writes pixels here.  Chosen to be in the user half, clear of the image
-/// (at `IMAGE_BASE`) and its stack, and clear of `HANDLES_VA`.
-pub const FB_VA: usize = 0x4000_0000;
-
-/// The framebuffer's width in pixels.
-pub const FB_WIDTH: usize = 640;
-
-/// The framebuffer's height in pixels.
-pub const FB_HEIGHT: usize = 480;
-
-/// The framebuffer's size in bytes (width × height × 4 bytes/pixel RGBA).
-pub const FB_SIZE: usize = FB_WIDTH * FB_HEIGHT * 4;
