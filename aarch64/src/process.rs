@@ -42,6 +42,8 @@ use crate::timer::{Timer, TimerCallback};
 #[cfg(target_os = "none")]
 use crate::vm::Entry;
 #[cfg(target_os = "none")]
+use port::elf::SymRef;
+#[cfg(target_os = "none")]
 use port::irq::IrqGuard;
 #[cfg(target_os = "none")]
 use port::mcslock::{Lock, LockNode};
@@ -270,6 +272,10 @@ struct Process {
     /// the `send`'s fast path, which clears the deadline through the same
     /// wake.
     deadline: Option<u64>,
+    /// Symbol info for backtrace: the ELF's bytes and symtab coordinates.
+    /// `None` for raw images or stripped ELFs.  The bytes pointer is into
+    /// the kernel's embedded buffer (lives for the boot's life).
+    sym: Option<SymRef>,
 }
 
 /// One optional process per slot, all empty.  Spelled out rather than
@@ -635,7 +641,7 @@ fn spawn_raw(text: &[u8], text_va: usize, stack_va: usize) -> ProcessId {
     // The heap base: just above the one stack page — page-aligned (it is), in
     // the user half (the caller's stack_va is), and clear of the text page.
     // The heap grows up from here toward the user-half edge.
-    install(aspace, text_va, user_sp, stack_va + mem::PAGE_SIZE_4K)
+    install(aspace, text_va, user_sp, stack_va + mem::PAGE_SIZE_4K, None)
 }
 
 /// The image base a server is linked at: the shared [`port::user::IMAGE_BASE`],
@@ -662,6 +668,12 @@ struct LoadedElf {
     entry: usize,
     user_sp: usize,
     heap_base: usize,
+    /// The symtab coordinates from the parsed ELF, if present.
+    symtab: Option<port::elf::SymTable>,
+    /// A pointer to the ELF's byte buffer (for the symref).
+    bytes_ptr: *const u8,
+    /// The length of the ELF's byte buffer.
+    bytes_len: usize,
 }
 
 /// Load a self-describing static ELF into a fresh `Aspace`: parse it, validate
@@ -784,7 +796,15 @@ fn load_elf(bytes: &[u8]) -> LoadedElf {
     // placement above).
     let user_sp = stack_base + STACK_PAGES * mem::PAGE_SIZE_4K - 16;
     let heap_base = stack_base + STACK_PAGES * mem::PAGE_SIZE_4K;
-    LoadedElf { aspace, entry, user_sp, heap_base }
+    LoadedElf {
+        symtab: image.symtab,
+        bytes_ptr: bytes.as_ptr(),
+        bytes_len: bytes.len(),
+        aspace,
+        entry,
+        user_sp,
+        heap_base,
+    }
 }
 
 /// The `Image::Elf` arm: load the ELF (via [`load_elf`]) and start the process
@@ -796,6 +816,11 @@ fn load_elf(bytes: &[u8]) -> LoadedElf {
 #[cfg(target_os = "none")]
 fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
     let loaded = load_elf(bytes);
+    // Extract the symtab reference for backtrace: the bytes are `&'static`
+    // (from the registry's embedded ELF), so the pointer is stable for the
+    // boot's life.
+    let sym =
+        loaded.symtab.map(|tab| SymRef { bytes: loaded.bytes_ptr, len: loaded.bytes_len, tab });
     // The spawner-passed channel pair: when present, map `HANDLES_VA` and
     // write the generalized header.  The page sits in the user half, clear of
     // the image (at `ELF_BASE`) and its stack by a wide margin, so it is never
@@ -824,7 +849,7 @@ fn spawn_elf(bytes: &[u8], handles: Option<Handles>) -> ProcessId {
         // kernel-writable, and `len` bytes fit.
         unsafe { core::ptr::copy_nonoverlapping(header.as_ptr(), kptr, len) };
     }
-    install(loaded.aspace, loaded.entry, loaded.user_sp, loaded.heap_base)
+    install(loaded.aspace, loaded.entry, loaded.user_sp, loaded.heap_base, sym)
 }
 
 /// The `SYS_SPAWN` handler: spawn a process from the image registry by
@@ -874,6 +899,8 @@ pub(crate) fn sys_spawn(index: u64, state_va: u64, prio: u64) -> u64 {
     // child-state to its `HANDLES_VA` page (via the child's TTBR1, the identity
     // map the kernel runs in).
     let loaded = load_elf(img.bytes);
+    let sym =
+        loaded.symtab.map(|tab| SymRef { bytes: loaded.bytes_ptr, len: loaded.bytes_len, tab });
     let kptr = loaded
         .aspace
         .map_user_page(Entry::rw_user_data(), port::user::HANDLES_VA)
@@ -882,7 +909,7 @@ pub(crate) fn sys_spawn(index: u64, state_va: u64, prio: u64) -> u64 {
     // a full page fits.
     unsafe { core::ptr::copy_nonoverlapping(state.as_ptr(), kptr, mem::PAGE_SIZE_4K) };
     // Install the child: a full table is an error, not a fault.
-    match try_install(loaded.aspace, loaded.entry, loaded.user_sp, loaded.heap_base, prio) {
+    match try_install(loaded.aspace, loaded.entry, loaded.user_sp, loaded.heap_base, prio, sym) {
         Some(id) => id as u64,
         None => SPAWN_NO_SLOT,
     }
@@ -903,6 +930,7 @@ fn try_install(
     user_sp: usize,
     heap_base: usize,
     prio: Priority,
+    sym: Option<SymRef>,
 ) -> Option<ProcessId> {
     let node = LockNode::new();
     // A slot is free when it is empty or already Exited: reclaiming is
@@ -939,6 +967,7 @@ fn try_install(
         heap_brk: heap_base,
         heap_hwm: heap_base,
         deadline: None,
+        sym,
     };
     table[id] = Some(proc);
     Some(id)
@@ -954,8 +983,9 @@ fn install(
     elr: usize,
     user_sp: usize,
     heap_base: usize,
+    sym: Option<SymRef>,
 ) -> ProcessId {
-    try_install(aspace, elr, user_sp, heap_base, DEFAULT_PRIORITY)
+    try_install(aspace, elr, user_sp, heap_base, DEFAULT_PRIORITY, sym)
         .unwrap_or_else(|| panic!("proc: no free slot: all {NPROCS} slots are Running or Runnable"))
 }
 
@@ -1379,7 +1409,7 @@ pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1, sp: u64, fp: u64
     // fallback: a mismatched TPIDR is a kernel bug, and the default panic
     // handler prints and halts — visible, rather than marking the wrong
     // process.
-    let current_id = {
+    let (current_id, sym) = {
         let mut table = TABLE.lock(&node);
         let id = table
             .iter()
@@ -1399,9 +1429,13 @@ pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1, sp: u64, fp: u64
         if p.state != State::Running {
             panic!("fault: process {id} is not Running (state {:?})", p.state);
         }
+        // Capture the symref before marking Exited (the lock is released
+        // after this block; the symref points into static memory, so it is
+        // safe to hold after the lock is gone).
+        let sym = p.sym;
         p.exit_status = FAULT_STATUS;
         p.state = State::Exited;
-        id
+        (id, sym)
     };
     let class = esr.fault_status_str();
     let fsc = esr.iss() & 0x3f;
@@ -1410,7 +1444,7 @@ pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1, sp: u64, fp: u64
     } else {
         iprintln!("process {current_id} faulted: far {far:#x} {class} (esr {esr:?})");
     }
-    crate::backtrace::print_backtrace(sp, fp, lr);
+    crate::backtrace::print_backtrace(sp, fp, lr, sym);
     // Close the dead process's channels: a peer blocked on one of them wakes
     // to `ERR_CLOSED` instead of blocking forever.  The table lock is
     // released here, so the wake (which may reschedule) does not hold it.

@@ -36,7 +36,35 @@ pub struct Segment {
     pub exec: bool,
 }
 
-/// A parsed user ELF: the entry point and its `PT_LOAD` segments.
+/// The coordinates of the ELF's `.symtab` and its linked `.strtab`, for
+/// backtrace symbol lookup.  Present only when the ELF was built with
+/// symbols (not stripped).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct SymTable {
+    /// Offset of the first `Elf64_Sym` in the file.
+    pub offset: u64,
+    /// Number of symbols in the table.
+    pub nsyms: usize,
+    /// Offset of the `.strtab` section's bytes in the file.
+    pub strtab_offset: u64,
+}
+
+/// A reference into an ELF buffer for symbol lookup: the buffer's pointer
+/// and length, plus the symtab coordinates.  `Copy` (all fields are).
+/// The pointer must be into a buffer that lives at least as long as the
+/// reference is held (for embedded ELFs, that's the boot's life).
+#[derive(Copy, Clone)]
+pub struct SymRef {
+    /// Pointer to the ELF's byte buffer.
+    pub bytes: *const u8,
+    /// Length of the ELF's byte buffer.
+    pub len: usize,
+    /// The symtab coordinates within the buffer.
+    pub tab: SymTable,
+}
+
+/// A parsed user ELF: the entry point, its `PT_LOAD` segments, and (if
+/// present) its symbol table coordinates.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Elf {
     /// `e_entry`, where the process starts.
@@ -45,6 +73,8 @@ pub struct Elf {
     segments: [Segment; MAX_SEGMENTS],
     /// Number of valid `PT_LOAD` segments in `segments`.
     nsegments: usize,
+    /// The symbol table coordinates, if the ELF has a `.symtab` section.
+    pub symtab: Option<SymTable>,
 }
 
 impl Elf {
@@ -97,6 +127,12 @@ const PF_X: u32 = 0x1;
 const EHDR_SIZE: usize = 64;
 /// ELF64 program-header size.
 const PHDR_SIZE: usize = 56;
+/// ELF64 section-header size.
+const SHDR_SIZE: usize = 64;
+/// `sh_type` for a symbol table section.
+const SHT_SYMTAB: u32 = 2;
+/// Size of one `Elf64_Sym` entry.
+const SYMENT_SIZE: u64 = 24;
 
 /// Read a little-endian `u16` at `off`, or `Truncated` if it runs past the end.
 fn read_u16(elf: &[u8], off: usize) -> Result<u16> {
@@ -196,7 +232,43 @@ pub fn parse(elf: &[u8]) -> Result<Elf> {
         return Err(ElfError::NoLoadSegment);
     }
 
-    Ok(Elf { entry, segments, nsegments })
+    // Section headers: find `.symtab` (SHT_SYMTAB) and its linked `.strtab`.
+    // These are optional (a stripped ELF has no `.symtab`); absence is not
+    // an error — the backtrace falls back to raw addresses.
+    let mut symtab = None;
+    let shoff = read_u64(elf, 40)?;
+    let shentsize = read_u16(elf, 58)?;
+    let shnum = read_u16(elf, 60)?;
+    if shnum > 0 && shoff > 0 && shentsize as usize == SHDR_SIZE {
+        let table_end =
+            shoff.checked_add(shnum as u64 * SHDR_SIZE as u64).ok_or(ElfError::Truncated)?;
+        if table_end <= len {
+            for i in 0..(shnum as usize) {
+                let base = (shoff + i as u64 * SHDR_SIZE as u64) as usize;
+                let sh_type = read_u32(elf, base + 4)?;
+                if sh_type != SHT_SYMTAB {
+                    continue;
+                }
+                let sh_offset = read_u64(elf, base + 24)?;
+                let sh_size = read_u64(elf, base + 32)?;
+                let sh_link = read_u32(elf, base + 40)? as usize;
+                let sh_entsize = read_u64(elf, base + 56)?;
+                if sh_entsize != SYMENT_SIZE || sh_link >= shnum as usize {
+                    continue;
+                }
+                let nsyms = (sh_size / SYMENT_SIZE) as usize;
+                // The linked section is the `.strtab`.
+                let strtab_base = (shoff + sh_link as u64 * SHDR_SIZE as u64) as usize;
+                let strtab_offset = read_u64(elf, strtab_base + 24)?;
+                if sh_offset + sh_size <= len && strtab_offset <= len {
+                    symtab = Some(SymTable { offset: sh_offset, nsyms, strtab_offset });
+                }
+                break;
+            }
+        }
+    }
+
+    Ok(Elf { entry, segments, nsegments, symtab })
 }
 
 #[cfg(test)]
