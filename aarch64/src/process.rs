@@ -86,7 +86,7 @@ pub(crate) const CONTEXT_SZ: usize = 112;
 /// The table size.  A compile constant: the kstacks below are statics,
 /// so there is no allocation story.
 #[cfg(target_os = "none")]
-pub(crate) const NPROCS: usize = 8;
+const NPROCS: usize = 8;
 
 /// Each process's kernel stack: frame (304) + suspended call chains,
 /// 64 KiB, the same size as the interrupt stack (16 pages).

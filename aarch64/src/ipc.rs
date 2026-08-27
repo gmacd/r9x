@@ -171,7 +171,6 @@ pub fn channel(handle: ChannelHandle) -> Option<&'static Channel> {
     Some(&CHANNELS[handle])
 }
 
-/// The channel handles each process holds: bit `h` is set when the process
 /// Close the channels a dying process is blocked on.  Called from the
 /// process-death paths (`exit_current`, the kill, the fault): for each
 /// channel, if the dead process is the `recv_waiter` or `send_waiter`,

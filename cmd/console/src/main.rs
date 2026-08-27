@@ -19,7 +19,6 @@
 
 use r9x_std::ipc;
 use r9x_std::mem::map_mmio;
-use r9x_std::process::exit;
 use r9x_std::rt;
 
 /// The PL011 UART's physical base on the BCM2711 (QEMU `raspi4b`); a constant
@@ -116,15 +115,19 @@ fn main() {
     let (op, _, _) = ipc::receive(reply_chan, &mut reply);
     let _ = (op == R_OK) || (op == R_EFULL);
 
-    // One-shot client service: receive a byte on this server's own inbound
-    // channel, echo it back on the outbound channel, then exit.  A
-    // persistent loop is the 9P servers' concern; this needs only one
-    // round-trip to prove the namespace works end to end.
-    let mut req_buf = [0u8; 16];
-    let (_, bytes, tag) = ipc::receive(in_h, &mut req_buf);
-    let n = bytes.min(16);
-    // Reply with the received bytes echoed: opcode `R_OK`.
-    ipc::reply(out_h, R_OK, tag, &req_buf[..n]);
-
-    exit(0);
+    // Persistent console loop: each message's payload is text to write to the
+    // UART.  Reply R_OK with no payload.  The console server never exits — it
+    // owns the terminal for the lifetime of the system.
+    let mut req_buf = [0u8; 256];
+    loop {
+        let (_, bytes, tag) = ipc::receive(in_h, &mut req_buf);
+        let n = bytes.min(256);
+        // SAFETY: `dr` is the PL011 data register (Device-memory page).
+        unsafe {
+            for &b in &req_buf[..n] {
+                trace(dr, b);
+            }
+        };
+        ipc::reply(out_h, R_OK, tag, &[]);
+    }
 }

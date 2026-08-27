@@ -2,6 +2,7 @@
 #![no_std]
 #![no_main]
 extern crate alloc;
+use alloc::format;
 use r9x_std::ipc;
 use r9x_std::mem;
 use r9x_std::println;
@@ -54,8 +55,10 @@ const TAG_GET_BOARD_SERIAL: u32 = 0x0001_0004;
 const OP_CONFIGURE_FB: u16 = 0;
 const OP_GET_PROPERTY: u16 = 1;
 const OP_BIND: u16 = 0;
+const OP_RESOLVE: u16 = 1;
 const R_OK: u16 = 0;
 const NAME: &[u8] = b"/dev/mailbox";
+const CONSOLE_NAME: &[u8] = b"/dev/console";
 
 #[inline(never)]
 #[unsafe(no_mangle)]
@@ -191,10 +194,10 @@ fn main() {
         exit(13);
     }
     let buf_va = MBOX_BUF_VA as usize;
-    // Print the ARM memory range: the kernel used to do this at boot, but
-    // the mailbox server owns the hardware query.
+    // Query the ARM memory range: the kernel used to print this at boot, but
+    // the mailbox server owns the hardware query.  The text is written through
+    // the console server (below) so it appears on the terminal.
     let (mem_base, mem_size) = get_arm_memory(buf_va, buf_pa);
-    println!("Memory: {mem_base:#010x} ({mem_size:#x} bytes)");
     let (in_h, out_h) = ipc::create_pair();
     if in_h > 15 {
         println!("mailbox: create_pair failed (in_h={in_h})");
@@ -231,6 +234,36 @@ fn main() {
     let _ = ipc::send(ns_in, OP_BIND, 0, &req);
     let mut reply = [0u8; 8];
     let _ = ipc::receive(reply_chan, &mut reply);
+
+    // Resolve /dev/console and write the memory info through the console
+    // server so it appears on the terminal (not the raw debug UART).
+    {
+        let reply2 = ipc::create_chan();
+        let mut res_req = [0u8; CONSOLE_NAME.len() + 4];
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                CONSOLE_NAME.as_ptr(),
+                res_req.as_mut_ptr(),
+                CONSOLE_NAME.len(),
+            );
+            core::ptr::copy_nonoverlapping(
+                (reply2 as u32).to_le_bytes().as_ptr(),
+                res_req.as_mut_ptr().add(CONSOLE_NAME.len()),
+                4,
+            );
+        };
+        let _ = ipc::send(ns_in, OP_RESOLVE, 0, &res_req);
+        let mut res_reply = [0u8; 8];
+        let (op, _, _) = ipc::receive(reply2, &mut res_reply);
+        if op == R_OK {
+            let con_in = u32::from_le_bytes(res_reply[0..4].try_into().unwrap()) as u64;
+            let text = format!("Memory: {mem_base:#010x} ({mem_size:#x} bytes)\n");
+            let _ = ipc::send(con_in, 0, 0, text.as_bytes());
+            let mut ack = [0u8; 4];
+            let _ = ipc::receive(out_h, &mut ack);
+        }
+    }
+
     loop {
         let mut req_buf = [0u8; 64];
         let (_, bytes, tag) = ipc::receive(in_h, &mut req_buf);

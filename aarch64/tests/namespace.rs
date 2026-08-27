@@ -136,29 +136,24 @@ pub extern "C" fn main9(dtb_va: usize) {
     let con_out = u32::from_le_bytes(reply.buf[4..8].try_into().unwrap()) as usize;
     println!("resolved /dev/console: in={} out={}", con_in, con_out);
 
-    // Round-trip: send a byte on the console server's inbound channel,
-    // run the console server (it wakes, echoes the byte back), then read
-    // the echo.
+    // Write: send a byte on the console server's inbound channel — the
+    // server writes it to the UART and replies R_OK.
     let byte = b'x';
-    let roundtrip_req = Message::new(0, 2, &[byte]);
+    let write_req = Message::new(0, 2, &[byte]);
     let con_in_ch = ipc::channel(con_in).expect("con_in channel exists");
-    try_send(&ipc::KernSched, con_in_ch, roundtrip_req).expect("roundtrip send");
+    try_send(&ipc::KernSched, con_in_ch, write_req).expect("write send");
     process::run_all();
     let con_out_ch = ipc::channel(con_out).expect("con_out channel exists");
-    let echo = try_receive(&ipc::KernSched, con_out_ch)
-        .unwrap_or_else(|e| panic!("namespace: roundtrip receive failed: {e:?}"));
-    check!(
-        echo.len == 1 && echo.buf[0] == byte,
-        "roundtrip echoed byte {byte}, got len {} buf[0]={:?}",
-        echo.len,
-        echo.buf[0]
-    );
-    println!("roundtrip byte ok");
+    let reply = try_receive(&ipc::KernSched, con_out_ch)
+        .unwrap_or_else(|e| panic!("namespace: write reply failed: {e:?}"));
+    check!(reply.opcode == R_OK, "console write replied R_OK, got opcode {}", reply.opcode);
+    println!("console write ok");
 
-    // The console server exited after its one-shot reply.
+    // The console server is persistent: it is still alive (blocked on its
+    // next receive), not exited.
     check!(
-        process::status(server) == Some(0),
-        "console server exited 0, got {:?}",
+        process::status(server).is_none(),
+        "console server still alive (persistent), got {:?}",
         process::status(server)
     );
     // The nameserver is still alive (blocked on receive, waiting for the
