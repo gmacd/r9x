@@ -19,6 +19,43 @@ impl EsrEl1 {
     pub fn exception_class_enum(&self) -> Result<ExceptionClass, u8> {
         ExceptionClass::try_from(self.ec()).map_err(|e| e.number)
     }
+
+    /// The fault status code (DFSC for a Data Abort, IFSC for an Instruction
+    /// Abort — the same ISS[5:0] field either way), decoded to a class string:
+    /// the way Linux's `fault_info` table does.  A translation/access-flag/
+    /// permission fault carries its walk level; a synchronous external abort
+    /// and an alignment fault are single classes; anything else is
+    /// `"unknown"` (the caller prints the raw code alongside).
+    pub fn fault_status_str(&self) -> &'static str {
+        fault_status_str((self.iss() & 0x3f) as u8)
+    }
+}
+
+/// Decode a fault status code (DFSC/IFSC, ISS[5:0]) into a class string.
+///
+/// The encoding is the AArch64 shared fault-status-code space:
+/// `0b0001xx` translation fault at level `xx`, `0b0010xx` access-flag fault at
+/// level `xx`, `0b0011xx` permission fault at level `xx`, `0b010000`
+/// synchronous external abort (not on the walk), and `0b100001` alignment
+/// fault.  Everything else is `"unknown"` — the caller prints the raw code.
+pub fn fault_status_str(fsc: u8) -> &'static str {
+    match fsc {
+        0b000100 => "translation fault L0",
+        0b000101 => "translation fault L1",
+        0b000110 => "translation fault L2",
+        0b000111 => "translation fault L3",
+        0b001000 => "access flag fault L0",
+        0b001001 => "access flag fault L1",
+        0b001010 => "access flag fault L2",
+        0b001011 => "access flag fault L3",
+        0b001100 => "permission fault L0",
+        0b001101 => "permission fault L1",
+        0b001110 => "permission fault L2",
+        0b001111 => "permission fault L3",
+        0b010000 => "external abort",
+        0b100001 => "alignment fault",
+        _ => "unknown",
+    }
 }
 
 impl fmt::Debug for EsrEl1 {
@@ -158,5 +195,20 @@ mod tests {
             EsrEl1IssInstructionAbort::from_esr_el1(r).unwrap().instruction_fault().unwrap(),
             InstructionFaultStatusCode::TranslationFaultLevel0
         );
+    }
+
+    // Pins the DFSC/IFSC decode so a fault printer wrong in the same way as
+    // the raw ISS print (the 87 misdiagnosis) is caught here, not in the field.
+    #[test]
+    fn test_fault_status_str() {
+        assert_eq!(fault_status_str(0b000100), "translation fault L0");
+        assert_eq!(fault_status_str(0b000101), "translation fault L1");
+        assert_eq!(fault_status_str(0b000110), "translation fault L2");
+        assert_eq!(fault_status_str(0b000111), "translation fault L3");
+        assert_eq!(fault_status_str(0b001001), "access flag fault L1");
+        assert_eq!(fault_status_str(0b001110), "permission fault L2");
+        assert_eq!(fault_status_str(0b010000), "external abort");
+        assert_eq!(fault_status_str(0b100001), "alignment fault");
+        assert_eq!(fault_status_str(0b101010), "unknown");
     }
 }

@@ -1337,7 +1337,15 @@ fn switch_out(demote_to: State) -> bool {
 pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1) -> ! {
     let current = unsafe { tpidr_current() };
     if current.is_null() {
-        iprintln!("EL0 fault with no process running: far {far:#x} esr {esr:?}");
+        let class = esr.fault_status_str();
+        let fsc = esr.iss() & 0x3f;
+        if class == "unknown" {
+            iprintln!(
+                "EL0 fault with no process running: far {far:#x} unknown {fsc:#04x} (esr {esr:?})"
+            );
+        } else {
+            iprintln!("EL0 fault with no process running: far {far:#x} {class} (esr {esr:?})");
+        }
         loop {
             core::hint::spin_loop();
         }
@@ -1373,7 +1381,13 @@ pub(crate) fn fault(far: u64, esr: crate::reg::esr_el1::EsrEl1) -> ! {
         p.state = State::Exited;
         id
     };
-    iprintln!("process {current_id} faulted: far {far:#x} esr {esr:?}");
+    let class = esr.fault_status_str();
+    let fsc = esr.iss() & 0x3f;
+    if class == "unknown" {
+        iprintln!("process {current_id} faulted: far {far:#x} unknown {fsc:#04x} (esr {esr:?})");
+    } else {
+        iprintln!("process {current_id} faulted: far {far:#x} {class} (esr {esr:?})");
+    }
 
     if !resched() {
         // No next Runnable: the last process.  Unwind run_all.

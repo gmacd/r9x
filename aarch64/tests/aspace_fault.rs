@@ -3,9 +3,10 @@
 //!
 //! A writes to an unmapped VA (`0x5000`): a data abort taken in EL0 walks
 //! A's own TTBR0, finds no mapping, and the kernel calls `process::fault`,
-//! which kills A with `FAULT_STATUS` (0xff) and reschedules to B.  B exits
-//! cleanly with status 5.  The peer (B) and the kernel survive the fault —
-//! the isolation proof at the fault level.
+//! which prints the decoded fault class — a level-3 translation fault — and
+//! kills A with `FAULT_STATUS` (0xff), rescheduling to B.  B exits cleanly
+//! with status 5.  The peer (B) and the kernel survive the fault — the
+//! isolation proof at the fault level.
 //!
 //! Without the fault handler (before this task), the `str` faults, the
 //! vector falls through to print-and-spin, and the machine hangs instead of
