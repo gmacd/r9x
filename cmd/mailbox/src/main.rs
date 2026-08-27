@@ -4,26 +4,32 @@
 extern crate alloc;
 use r9x_std::ipc;
 use r9x_std::mem;
+use r9x_std::println;
 use r9x_std::process::exit;
 use r9x_std::rt;
 
-/// The page-aligned base of the Mailbox register page.  The Mailbox
-/// registers start at offset 0xB8 within this page.
-const MBOX_PAGE_PHYS: u64 = 0xfe00_0000;
-/// The Mailbox registers' word offset within the mapped page (0xB8 / 4 = 46).
-const MBOX_REG_BASE: usize = 0xB8 / 4;
+/// The page-aligned base of the Mailbox register page.  The BCM283x Mailbox
+/// registers start at page offset 0x880 (absolute 0xFE00_B880 on the BCM2711).
+const MBOX_PAGE_PHYS: u64 = 0xfe00_b000;
+/// The Mailbox registers' word offset within the mapped page (0x880 / 4 = 544).
+const MBOX_REG_BASE: usize = 0x880 / 4;
 const MBOX_VA: u64 = 0x7000_0000;
-/// BCM2835 Mailbox register layout (relative to 0xB8):
+/// The user VA of the Mailbox request/response buffer, mapped as Device
+/// memory (see `main`): the VC reads the request and writes the response by
+/// DMA, so a cached (Normal) mapping would hide the CPU's writes from the VC
+/// and the VC's response from the CPU.  A free user VA in the MMIO range
+/// (above the heap/stack, alongside MBOX_VA and FB_VA) holding one page.
+const MBOX_BUF_VA: u64 = 0x5000_0000;
+/// BCM2835 Mailbox register layout (relative to 0x880), mirroring
+/// `aarch64/src/mailbox.rs`:
 ///   +0x00  Read (receive a response)
-///   +0x04  Poll read (bit 0 = 1: no response ready)
-///   +0x08  Write (send a request)
-///   +0x0C  Poll write (bit 0 = 1: write buffer full)
+///   +0x18  Status (bit31 = 1: write full, bit30 = 1: read empty)
+///   +0x20  Write (send a request)
 const MBOX_READ: usize = MBOX_REG_BASE;
-const MBOX_POLL_READ: usize = MBOX_REG_BASE + 1;
-const MBOX_WRITE: usize = MBOX_REG_BASE + 2;
-const MBOX_POLL_WRITE: usize = MBOX_REG_BASE + 3;
-const MBOX_FULL: u32 = 0x0000_0001;
-const MBOX_EMPTY: u32 = 0x0000_0001;
+const MBOX_STATUS: usize = MBOX_REG_BASE + 0x18 / 4;
+const MBOX_WRITE: usize = MBOX_REG_BASE + 0x20 / 4;
+const MBOX_FULL: u32 = 0x8000_0000;
+const MBOX_EMPTY: u32 = 0x4000_0000;
 const CHANNEL_ARM_TO_VC: u32 = 8;
 #[allow(dead_code)]
 const TAG_FB_ALLOCATE: u32 = 0x0004_0001;
@@ -62,11 +68,11 @@ unsafe fn mbox_reg_write(w: usize, val: u32) {
 }
 unsafe fn mbox_request(buf_pa: u64) {
     unsafe {
-        while (mbox_reg_read(MBOX_POLL_WRITE) & MBOX_FULL) != 0 {}
+        while (mbox_reg_read(MBOX_STATUS) & MBOX_FULL) != 0 {}
         let r = (buf_pa as u32 & !0xF) | CHANNEL_ARM_TO_VC;
         mbox_reg_write(MBOX_WRITE, r);
         loop {
-            while (mbox_reg_read(MBOX_POLL_READ) & MBOX_EMPTY) != 0 {}
+            while (mbox_reg_read(MBOX_STATUS) & MBOX_EMPTY) != 0 {}
             if mbox_reg_read(MBOX_READ) == r {
                 break;
             }
@@ -137,19 +143,34 @@ fn get_property(buf_va: usize, buf_pa: u64, tag_id: u32) -> u32 {
 fn main() {
     let m = mem::map_mmio(MBOX_PAGE_PHYS, MBOX_VA, 4096);
     if m != 0 {
+        println!("mailbox: map_mmio({MBOX_PAGE_PHYS:#x} @ {MBOX_VA:#x}) -> {m}");
         exit(10);
     }
-    let (buf_va, buf_pa) = match mem::alloc_page() {
-        Some((va, pa)) => (va, pa),
-        None => exit(1),
+    // A physical page backs the request/response buffer.  The buffer is used
+    // at MBOX_BUF_VA, mapped as Device memory (not the page's Normal heap VA,
+    // which is left unmapped-but-allocated): the VC reads the request and
+    // writes the response over the Mailbox by DMA, and a cached (Normal)
+    // mapping would let the CPU's writes sit in the cache, so the VC would
+    // read stale bytes and the CPU would miss the VC's response.  Device
+    // memory is DMA-safe in both directions.
+    let Some((_, buf_pa)) = mem::alloc_page() else {
+        println!("mailbox: alloc_page failed");
+        exit(1);
     };
+    if mem::map_mmio(buf_pa, MBOX_BUF_VA, 4096) != 0 {
+        println!("mailbox: map_mmio(buf {buf_pa:#x} @ {MBOX_BUF_VA:#x}) failed");
+        exit(13);
+    }
+    let buf_va = MBOX_BUF_VA as usize;
     let (in_h, out_h) = ipc::create_pair();
     if in_h > 15 {
+        println!("mailbox: create_pair failed (in_h={in_h})");
         exit(11);
     } // ERR_NO_SLOT is > 15
     // The nameserver's inbound channel is passed in the extra fields.
     let ns_in = rt::handle_at(2) as u64;
     if ns_in > 15 {
+        println!("mailbox: bad ns_inbound handle ({ns_in})");
         exit(12);
     }
     // Create a reply channel: the nameserver sends the result here, not on its
@@ -185,6 +206,7 @@ fn main() {
         match op {
             OP_CONFIGURE_FB => {
                 if n < 14 {
+                    println!("mailbox: short configure request (n={n})");
                     exit(1);
                 }
                 let w = u32::from_le_bytes([req_buf[2], req_buf[3], req_buf[4], req_buf[5]]);
@@ -200,6 +222,7 @@ fn main() {
             }
             OP_GET_PROPERTY => {
                 if n < 6 {
+                    println!("mailbox: short get_property request (n={n})");
                     exit(1);
                 }
                 let tag_id = u32::from_le_bytes([req_buf[2], req_buf[3], req_buf[4], req_buf[5]]);

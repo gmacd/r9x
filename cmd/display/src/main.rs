@@ -28,6 +28,7 @@ use alloc::vec::Vec;
 use r9x_abi::{FB_HEIGHT, FB_SIZE, FB_VA, FB_WIDTH};
 use r9x_std::ipc;
 use r9x_std::mem;
+use r9x_std::println;
 use r9x_std::process::exit;
 use r9x_std::rt;
 use r9x_std::time;
@@ -119,6 +120,7 @@ fn main() {
     let mut resolve_reply = [0u8; 8];
     let (op, _, _) = ipc::receive(reply_chan1, &mut resolve_reply);
     if op != R_OK {
+        println!("display: resolve /dev/mailbox failed (op={op})");
         exit(1);
     }
     let mbox_in = u32::from_le_bytes([
@@ -146,20 +148,21 @@ fn main() {
     let mut reply = [0u8; 24];
     let (op, _, _) = ipc::receive(mbox_out as u64, &mut reply);
     if op != R_OK || reply[0] != 0 {
+        println!("display: fb reply bad (op={op}, status={})", reply[0]);
         exit(1);
     }
     let phys_lo = u32::from_le_bytes([reply[1], reply[2], reply[3], reply[4]]);
     let phys_hi = u32::from_le_bytes([reply[5], reply[6], reply[7], reply[8]]);
     let phys = (phys_hi as u64) << 32 | phys_lo as u64;
-    // TODO(mailbox-protocol): the QEMU firmware's ALLOCATE response is not
-    // landing in the buffer correctly.  Use the known raspi4b framebuffer
-    // base directly until that is fixed.
-    let _ = phys;
-    let phys: u64 = 0x3c10_0000;
+    if phys == 0 {
+        println!("display: mailbox returned phys=0");
+        exit(2);
+    }
 
     // Map the framebuffer into this process's page table at FB_VA.
     let map_result = mem::map_mmio(phys, FB_VA as u64, FB_SIZE as u64);
     if map_result != 0 {
+        println!("display: map_mmio({phys:#x} @ {FB_VA:#x}) -> {map_result}");
         exit(3);
     }
 
