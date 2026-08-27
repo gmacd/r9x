@@ -16,6 +16,8 @@ pub mod aspace;
 #[cfg(target_os = "none")]
 pub mod backtrace;
 pub mod boot;
+#[cfg(target_os = "none")]
+pub mod demangle;
 pub mod devcons;
 pub mod deviceutil;
 pub mod gic;

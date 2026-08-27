@@ -82,7 +82,14 @@ fn print_addr(depth: usize, addr: u64, sym: Option<&SymRef>) {
     if let Some(sym) = sym
         && let Some((name, offset)) = lookup_symbol(sym, addr)
     {
-        iprintln!("    #{depth}  {name}+{offset:#x}  ({addr:#018x})");
+        let mut buf = [0u8; 80];
+        if crate::demangle::demangle(name, &mut buf) {
+            let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            let demangled = core::str::from_utf8(&buf[..len]).unwrap_or(name);
+            iprintln!("    #{depth}  {demangled}+{offset:#x}  ({addr:#018x})");
+        } else {
+            iprintln!("    #{depth}  {name}+{offset:#x}  ({addr:#018x})");
+        }
         return;
     }
     iprintln!("    #{depth}  {addr:#018x}");
