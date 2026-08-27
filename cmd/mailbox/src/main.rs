@@ -36,6 +36,11 @@ const TAG_FB_ALLOCATE: u32 = 0x0004_0001;
 const TAG_FB_SET_WIDTH_HEIGHT: u32 = 0x0004_8003;
 const TAG_FB_SET_DEPTH: u32 = 0x0004_8005;
 const TAG_FB_SET_PIXEL_ORDER: u32 = 0x0004_8006;
+/// Get the ARM memory range (base, size in bytes) via the mailbox
+/// property interface.  The kernel used to print this at boot; the
+/// mailbox server is the right owner of the hardware query.
+const TAG_GET_ARM_MEMORY: u32 = 0x0001_0005;
+
 #[allow(dead_code)]
 const TAG_GET_FIRMWARE_REVISION: u32 = 0x0000_0001;
 #[allow(dead_code)]
@@ -140,6 +145,30 @@ fn get_property(buf_va: usize, buf_pa: u64, tag_id: u32) -> u32 {
     }
 }
 
+/// Query the ARM memory range via the mailbox property interface.
+/// Returns (base_phys, size_bytes).
+fn get_arm_memory(buf_va: usize, buf_pa: u64) -> (u64, u64) {
+    let base = buf_va as *mut u32;
+    unsafe {
+        // The ARM memory response carries two u32 values (base, size),
+        // so the buffer needs 8 words: size, code, tag_id, val_size,
+        // val_type, base, size, end_tag.
+        core::ptr::write_bytes(base, 0, 8);
+        core::ptr::write_volatile(base.add(0), 32);
+        core::ptr::write_volatile(base.add(1), 0);
+        core::ptr::write_volatile(base.add(2), TAG_GET_ARM_MEMORY);
+        core::ptr::write_volatile(base.add(3), 8);
+        core::ptr::write_volatile(base.add(4), 0);
+        core::ptr::write_volatile(base.add(5), 0);
+        core::ptr::write_volatile(base.add(6), 0);
+        core::ptr::write_volatile(base.add(7), 0);
+        mbox_request(buf_pa);
+        let mem_base = core::ptr::read_volatile(base.add(5)) as u64;
+        let mem_size = core::ptr::read_volatile(base.add(6)) as u64;
+        (mem_base, mem_size)
+    }
+}
+
 fn main() {
     let m = mem::map_mmio(MBOX_PAGE_PHYS, MBOX_VA, 4096);
     if m != 0 {
@@ -162,6 +191,10 @@ fn main() {
         exit(13);
     }
     let buf_va = MBOX_BUF_VA as usize;
+    // Print the ARM memory range: the kernel used to do this at boot, but
+    // the mailbox server owns the hardware query.
+    let (mem_base, mem_size) = get_arm_memory(buf_va, buf_pa);
+    println!("Memory: {mem_base:#010x} ({mem_size:#x} bytes)");
     let (in_h, out_h) = ipc::create_pair();
     if in_h > 15 {
         println!("mailbox: create_pair failed (in_h={in_h})");

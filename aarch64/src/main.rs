@@ -5,49 +5,9 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(not(test), no_main)]
 
-use aarch64::kmem::{
-    boottext_physrange, bss_physrange, data_physrange, rodata_physrange, text_physrange,
-    total_kernel_physrange,
-};
 use aarch64::vm::RootPageTableType;
-use aarch64::{boot, mailbox, pagealloc, process, system, vm};
-use port::mem::{PhysRange, VirtRange};
+use aarch64::{boot, mailbox, process, system, vm};
 use port::println;
-
-fn print_memory_range(name: &str, range: &PhysRange) {
-    let size = range.size();
-    println!("  {name}{range} ({size:#x})");
-}
-
-fn print_binary_sections() {
-    println!("Binary sections:");
-    print_memory_range("boottext:\t", &boottext_physrange());
-    print_memory_range("text:\t\t", &text_physrange());
-    print_memory_range("rodata:\t", &rodata_physrange());
-    print_memory_range("data:\t\t", &data_physrange());
-    print_memory_range("bss:\t\t", &bss_physrange());
-    print_memory_range("total:\t", &total_kernel_physrange());
-}
-
-fn print_memory_info() {
-    println!("Memory usage:");
-    let (used, total) = pagealloc::usage_bytes();
-    println!("  Used:\t\t{used:#016x}");
-    println!("  Total:\t{total:#016x}");
-}
-
-fn print_stacks() {
-    unsafe extern "C" {
-        static interruptstackbase: [u64; 0];
-        static interruptstacksz: [u64; 0];
-    }
-
-    let interrupt_stack_base = unsafe { interruptstackbase.as_ptr().addr() };
-    let interrupt_stack_max = interrupt_stack_base + unsafe { interruptstacksz.as_ptr().addr() };
-    let range = VirtRange::new(interrupt_stack_base, interrupt_stack_max);
-    let range_size = range.size();
-    println!("Interrupt stack:{range} ({range_size:#x})");
-}
 
 /// dtb_va is the virtual address of the DTB structure.  The physical address is
 /// assumed to be dtb_va-KZERO.
@@ -77,13 +37,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     //      not left level-asserted re-firing forever.
     boot::interrupts(&dt);
 
-    println!();
-    println!("r9 from the Internet");
-    print_stacks();
-    print_binary_sections();
-    print_memory_info();
-
-    println!("Set up a user process");
+    println!("r9");
 
     unsafe {
         vm::init_user_page_tables();
