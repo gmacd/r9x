@@ -5,8 +5,12 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(not(test), no_main)]
 
+use aarch64::kmem::{
+    boottext_physrange, bss_physrange, data_physrange, rodata_physrange, text_physrange,
+    total_kernel_physrange,
+};
 use aarch64::vm::RootPageTableType;
-use aarch64::{boot, mailbox, process, system, vm};
+use aarch64::{boot, mailbox, pagealloc, process, system, vm};
 use port::println;
 
 /// dtb_va is the virtual address of the DTB structure.  The physical address is
@@ -37,15 +41,14 @@ pub extern "C" fn main9(dtb_va: usize) {
     //      not left level-asserted re-firing forever.
     boot::interrupts(&dt);
 
-    println!("r9");
+    println!("r9 from the Internet");
 
     unsafe {
         vm::init_user_page_tables();
         vm::switch(vm::user_pagetable(), RootPageTableType::User);
     }
 
-    // vmdebug::print_recursive_tables(RootPageTableType::Kernel);
-    // vmdebug::print_recursive_tables(RootPageTableType::User);
+    print_boot_diagnostics();
 
     // The real bringup: the kernel spawns the nameserver (handed its own
     // channel pair — the first-server asymmetry), the console server (which
@@ -77,6 +80,40 @@ pub extern "C" fn main9(dtb_va: usize) {
 
     #[allow(clippy::empty_loop)]
     loop {}
+}
+
+/// Print the kernel's boot diagnostics: interrupt stack, binary sections,
+/// and page-allocator usage.  Called before `set_console_live()` so the text
+/// goes out the raw UART (the same physical device the console server owns).
+fn print_boot_diagnostics() {
+    // Interrupt stack.
+    unsafe extern "C" {
+        static interruptstackbase: [u64; 0];
+        static interruptstacksz: [u64; 0];
+    }
+    let base = unsafe { interruptstackbase.as_ptr().addr() };
+    let end = base + unsafe { interruptstacksz.as_ptr().addr() };
+    println!("Interrupt stack:{base:#x}..{end:#x} ({:#x})", end - base);
+
+    // Binary sections.
+    println!("Binary sections:");
+    let sections = [
+        ("boottext:", &boottext_physrange()),
+        ("text:", &text_physrange()),
+        ("rodata:", &rodata_physrange()),
+        ("data:", &data_physrange()),
+        ("bss:", &bss_physrange()),
+        ("total:", &total_kernel_physrange()),
+    ];
+    for (name, r) in sections {
+        println!("  {name:<12} {r} ({:#x})", r.size());
+    }
+
+    // Memory usage.
+    let (used, total) = pagealloc::usage_bytes();
+    println!("Memory usage:");
+    println!("  Used:\t\t{used:#016x}");
+    println!("  Total:\t\t{total:#016x}");
 }
 
 // User process setup now lives in aarch64/tests/user_process.rs, the timer
