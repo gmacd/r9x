@@ -16,13 +16,6 @@ the `display` verdict via `console::write`, and the `two_clients`
 serialisation test — filed in [done.md](done.md). Its build surfaced task 101
 (display server nameserver-handle form).
 
-**Moved in-repo 2026-08-28.** The task tree left the `_tasks` sibling and
-now lives at `tasks/` inside the repo, so a fix and the task it closes
-travel in one commit and the decision records in `docs/` can cite plans
-that a cloner actually has. Each task gained derived front matter
-(`id`, `status`, `wave`, `depends-on`, `commit`); conventions are in
-[README.md](README.md). Tasks 128 and 129 open the two check gates.
-
 **Architecture and correctness review 2026-08-28, tree at `f76d96a`** —
 design doc [plans/architecture-review-2026-08.md](plans/architecture-review-2026-08.md).
 Opened 102–127. §1 was empty and is now the largest section: the review
