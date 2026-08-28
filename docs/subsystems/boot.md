@@ -1,3 +1,10 @@
+---
+covers: aarch64/src/l.S, aarch64/src/main.rs, aarch64/src/boot.rs
+not covered: x86_64, riscv64 and port boot flows — stub sections below, written when they exist
+sources: the code itself; ARM ARMv8-A, BCM2711 ARM Peripherals for the aarch64 sequence
+verified: f76d96a (2026-08-28)
+---
+
 # How r9 Works
 
 **Please update with any material code change!**
@@ -22,16 +29,20 @@ The code in `l.S` exists to bring us to a state where we can run kernel code in 
 
 ### Initialisation (Rust)
 
-We're now in rust, in `main9`, and at a highlevel we:
+We're now in rust, in `main9` (`aarch64/src/main.rs:19`), and at a high level we:
 
-1. Set up interrupt handlers early so that we get a bit of feedback if things go wrong.
+1. `boot::irq_ops()` — register the DAIF interrupt ops before anything else, so we get a bit of feedback if things go wrong.
 2. Parse the device tree, enabling more informed initialisation.
-3. Set up the mailbox (rpi-specific, but allows us to extract more information from the hardware, and interact directly in certain ways).
-4. Initialise the [console](#devcons), ensuring we can use `port::println` to write to the UART.
-5. Write out some useful system information.
-6. Set up [virtual memory](#virtual-memory) in rust. (After switching we no longer need the pagetables set up in early initialisation.)
-7. Write out the page tables.
-8. That's it. Loop.
+3. Initialise the page allocator (`boot::page_allocator`) — see [Virtual Memory](#virtual-memory).
+4. Set up the mailbox (rpi-specific, but allows us to extract more information from the hardware, and interact directly in certain ways).
+5. Initialise the [console](#devcons), ensuring we can use `port::println` to write to the UART.
+6. `boot::interrupts` — interrupt bringup in a required order: `gic::init` (distributor + this core's CPU interface), `timer::init` (disarm CNTP before enabling the timer PPI), then unmask IRQs last, so an interrupt a prior boot stage left asserted is taken and acknowledged, not re-firing forever. Both inits panic on failure.
+7. Switch to the [virtual memory](#virtual-memory) user page tables. (After switching we no longer need the pagetables set up in early initialisation.)
+8. Write out some useful system information (`print_boot_diagnostics`).
+9. `system::bringup()` — spawn the nameserver (handed its own channel pair — the first-server asymmetry), the console server, and init.
+10. `system::spawn_display` — the display server (configures the framebuffer via IPC to the mailbox server, maps it with `SYS_MAP_MMIO`, and runs the frame loop forever).
+11. `port::devcons::set_console_live()` — the console server is bound; gate off the kernel's `println!` output from here on.
+12. `process::run_all()` — run the processes to a fixpoint, then idle.
 
 ### Virtual Memory
 
@@ -60,14 +71,24 @@ Future Improvements:
 
 ## x86_64
 
+Not yet covered — no boot-flow section has been written for this arch.
+
 ## riscv64
+
+Not yet covered — no boot-flow section has been written for this arch.
 
 ## port
 
-`port` is where all the shared subsytems are defined.
+`port` is where all the shared subsystems are defined.
 
 ### devcons
 
+Not yet covered.
+
 ### fdt
 
+Not yet covered.
+
 ### mcslock
+
+Not yet covered.

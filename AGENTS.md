@@ -49,3 +49,18 @@ The project must be free of errors and warnings at all times, including those fr
     not a target for either
 - Format:
   - `cargo xtask fmt` (`--check` to verify without rewriting)
+
+## Knowledge base
+
+`docs/` holds what is *true* about the project and its hardware, indexed in
+`docs/README.md`: hardware references, subsystem descriptions, decision
+records, and `docs/lessons.md` (gotchas that have already cost debugging
+time).
+
+- Grep `docs/` before searching the web or re-deriving hardware behaviour.
+- Anything durable you learn goes back in, with its source: spec section,
+  `file.rs:line`, or a dated measurement and the command behind it.
+- Every page declares `covers:` (the code it describes), `sources:`, and
+  `verified:` (commit and date last confirmed). Update `verified` when you
+  check a page against the code.
+- Status and work in flight belong in `tasks/` (see `tasks/README.md`), not in `docs/`.
