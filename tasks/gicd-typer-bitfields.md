@@ -33,7 +33,7 @@ backs.)
 
 ## Why it matters before SMP
 
-[0011](r9x/docs/decisions/0011-multicore-is-imminent.md) is the standing
+[0011](../docs/decisions/0011-multicore-is-imminent.md) is the standing
 decision that multicore is imminent. Secondary bringup will want the CPU
 interface count (per-core `init_cpu`, per-core banked INTID 0..31 sweeps,
 core-id bookkeeping), and `cpu_number()` as currently defined is exactly
