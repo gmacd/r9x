@@ -67,9 +67,11 @@ console server already mirrors the nameserver protocol.
 - **`r9x_std::fs`:** `File`, `open(path)`, `read`/`write`, `remove`, `read_dir`
   — each a 9P sequence against the file server (resolved by name through the
   nameserver). A `Path` type. This is the Plan 9 file server as a std API.
-- **`r9x_std::io` (complete the seed from Task 1):** `stdout`/`stderr` as a
+- **`r9x_std::io` (complete the seed from the arc's first member):**
+  `stdout`/`stderr` as a
   `File` on `/dev/console` (the console server, stage 5/6); `stdin` from the
-  console server's input channel. The `Read`/`Write` traits from Task 1 are now
+  console server's input channel. The `Read`/`Write` traits from the arc's
+  first member are now
   backed by real servers, not just the console.
 - **`r9x_std::net`:** `TcpListener`/`TcpStream`/`UdpSocket`-shaped handles over
   the network server's 9P interface (`/net`), resolved by name. Added only

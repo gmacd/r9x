@@ -24,5 +24,5 @@ Done when: `mark_range` takes no `check_end`; the bound check lives in the
 two public wrappers; the bitmapalloc tests still pass and gates are clean
 on all three architectures.
 
-Origin: plan `tasks/plans/range-by-value.md`, task 3 (kernel-taste lens —
-boolean parameters that make a function do two things).
+Origin: item 3 of the `range-by-value` plan (kernel-taste lens — boolean
+parameters that make a function do two things).
