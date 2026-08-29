@@ -181,14 +181,6 @@ refreshed 2026-08-27). Landing order per the audit: 46 → 50 → 47 → 45
     `verified:` commit, plus dangling paths and malformed headers.
     Reports, never blocks. _The convention exists and nothing enforces
     it; `HowItWorks.md` is what that looks like after a year._
-129. [tasks-check-gate.md](tasks-check-gate.md) — `cargo xtask tasks
-    --check`: validate task front matter against the prose `## Status:`
-    line, resolve cross-references, catch duplicate ids, and regenerate
-    this file's list section without touching the narrative above it.
-    _Front matter was derived mechanically in the move and has never
-    been validated._ Depends on 128 (shares the header-parsing and
-    reporting shape).
-
 46. [gate-frame-offsets.md](gate-frame-offsets.md) — frame-offset
     single-sourcing via build.rs `.equ` prelude. _Highest value: the
     disease is live — trap.S's comment says 288-byte frame, the code

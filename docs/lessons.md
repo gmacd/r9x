@@ -1,7 +1,7 @@
 ---
 covers: aarch64/src/timer.rs, aarch64/src/gic.rs, port/src/mcslock.rs, xtask/src
 sources: the code cited per entry; debugging sessions, dated
-verified: afdea4f (2026-08-28)
+verified: 4e351fb (2026-08-28)
 ---
 
 # Lessons learned

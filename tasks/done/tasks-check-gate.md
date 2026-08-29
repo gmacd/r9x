@@ -1,7 +1,8 @@
 ---
 id: 129
-status: open
+status: done
 depends-on: 128
+commit: 4e351fb
 ---
 
 # Task 129: `cargo xtask tasks --check` — validate the task tree and reconcile the index
