@@ -17,6 +17,7 @@ pub extern "C" fn main9(hartid: usize, dtb_ptr: usize) -> ! {
 
     println!();
     println!("r9 from the Internet");
+    port::devcons::release_checks_note();
     println!("Domain0 Boot HART = {hartid}");
     println!("DTB found at: {dtb_ptr:#x}");
 

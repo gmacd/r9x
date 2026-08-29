@@ -1,5 +1,5 @@
 ---
-covers: aarch64/src/timer.rs, aarch64/src/gic.rs, port/src/mcslock.rs, xtask/src
+covers: aarch64/src/timer.rs, aarch64/src/gic.rs, port/src/mcslock.rs, port/src/ipc.rs, xtask/src
 sources: the code cited per entry; debugging sessions, dated
 verified: a7d238a (2026-08-28)
 ---
@@ -108,6 +108,34 @@ command is interrupted or the tool times out, the background QEMU is orphaned
 and no later command owns the kill. If a session used background QEMU, verify
 before finishing with `pgrep -fl qemu-system` (expect none);
 `pkill -9 -f qemu-system-aarch64` clears strays.
+
+## `debug_assert!` wraps a predicate, never a side effect
+
+`debug_assert!(e)` expands to `if cfg!(debug_assertions) { assert!(e) }`. With
+debug assertions off (release builds) `e` is never evaluated, so any side
+effect inside it vanishes silently. The IPC fast path kept its enqueue inside
+the assert, so a release image dropped every fast-path message and deadlocked
+on the first send (task 102). Do the work in its own statement; assert only
+on the result.
+
+```rust
+// Good — the push runs in every build; the assert checks it
+let ok = inner.queue.push(msg);
+debug_assert!(ok);
+
+// Bad — in release the push never runs; the message is silently dropped
+debug_assert!(inner.queue.push(msg));
+```
+
+The workspace denies `clippy::debug_assert_with_mut_call`. It catches a
+direct `&mut` receiver but **not** a receiver reached through a `DerefMut`
+guard — which is exactly the shape above (`inner.queue.push`), so the lint
+would have let this bug through. The load-bearing guard is the CI job that
+builds and *boots* a release image (task 102): a dropped message deadlocks
+the boot. The rule, stated fully: assert on a pure predicate, and keep
+every side effect out of the macro.
+
+Witness: `port/src/ipc.rs`, the `send` and `try_send` fast paths.
 
 ## let-else reads and writes of one index do not sequence
 

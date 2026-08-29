@@ -32,6 +32,7 @@ pub extern "C" fn main(mach: &mut dat::Mach, _mbdata: u64) {
     devcons::init();
     println!();
     println!("r9 from the Internet");
+    port::devcons::release_checks_note();
     println!("looping now");
     let mut ctx = Label::new();
     let mut thr = Label::new();

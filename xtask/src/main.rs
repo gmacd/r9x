@@ -2061,6 +2061,15 @@ impl CiStep {
         heading("integration-test");
         IntegrationTestStep::for_ci(&self.config_name, self.profile, self.verbose).run()?;
 
+        // A release image must boot too.  A `debug_assert!` carrying a side
+        // effect (task 102) and the optimiser-dependent UB the release build
+        // exposes only show up in a release build, so the pass above cannot
+        // see them.  Skipped when the run is already release.
+        if self.profile != Profile::Release {
+            heading("integration-test (release)");
+            IntegrationTestStep::for_ci(&self.config_name, Profile::Release, self.verbose).run()?;
+        }
+
         heading("ok");
         Ok(())
     }

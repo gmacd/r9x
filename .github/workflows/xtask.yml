@@ -57,7 +57,9 @@ jobs:
     # ubuntu-latest (24.04) does not provide that machine; the qemu 10.2
     # in ubuntu-26.04 does.
     runs-on: ubuntu-26.04
-    timeout-minutes: 25
+    # 40 rather than 25: the release integration pass below adds a full
+    # opt-level-3 build of every image on top of the debug one.
+    timeout-minutes: 40
     strategy:
       matrix:
         arch: [aarch64, riscv64, x86-64]
@@ -101,3 +103,9 @@ jobs:
         run: cargo xtask dist --arch ${{ matrix.arch }} --verbose
       - name: Integration Test
         run: cargo xtask integration-test --arch ${{ matrix.arch }} --verbose
+      - name: Integration Test (release)
+        # A release image must boot too: a `debug_assert!` carrying a side
+        # effect (task 102) and the optimiser-dependent UB a release build
+        # exposes only show up in release, so the debug pass above cannot see
+        # them.
+        run: cargo xtask integration-test --arch ${{ matrix.arch }} --release --verbose

@@ -261,7 +261,8 @@ pub fn send<S: IpcScheduler>(
                 {
                     sched.boost(receiver, sched.priority(sender));
                 }
-                debug_assert!(inner.queue.push(msg));
+                let ok = inner.queue.push(msg);
+                debug_assert!(ok);
                 Some(receiver)
             } else if inner.queue.push(msg) {
                 // Slow path: no receiver blocked, room in the queue.
@@ -324,7 +325,8 @@ pub fn try_send<S: IpcScheduler>(
         if let Some(receiver) = inner.recv_waiter.take() {
             // Fast path: a receiver is blocked; hand it the message and wake
             // it.  No PI (the caller is the kernel, not a process).
-            debug_assert!(inner.queue.push(msg));
+            let ok = inner.queue.push(msg);
+            debug_assert!(ok);
             Some(receiver)
         } else if inner.queue.push(msg) {
             // Slow path: no receiver blocked, room in the queue.

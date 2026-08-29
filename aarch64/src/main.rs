@@ -42,6 +42,7 @@ pub extern "C" fn main9(dtb_va: usize) {
     boot::interrupts(&dt);
 
     println!("r9 from the Internet");
+    port::devcons::release_checks_note();
 
     unsafe {
         vm::init_user_page_tables();
