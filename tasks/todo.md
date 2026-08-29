@@ -238,10 +238,6 @@ refreshed 2026-08-27). Landing order per the audit: 46 → 50 → 47 → 45
     (IHI 0048B.b Table 4-6); on the GIC-400 `cpu_number()` returns 7
     where the register says 3. _Unused today, but it is the field SMP
     bringup (task 124) will reach for._
-131. [tasks-findings-cleanup.md](tasks-findings-cleanup.md) — rephrase the
-    three references the tasks gate (task 129) reports: the plan-item
-    `task 3` and the arc-ordinal `Task 1`. _Editorial; the gate reports,
-    it does not decide._
 132. [tasks-gate-coverage-gaps.md](tasks-gate-coverage-gaps.md) — three
     check classes the review found that the 129 spec omits: H1 versus
     `id:`, duplicate listings, basename collisions. _Coverage gaps; none
