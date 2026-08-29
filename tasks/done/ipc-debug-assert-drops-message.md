@@ -1,12 +1,12 @@
 ---
 id: 102
-status: open
-wave: 0
+status: done
+commit: a9e1c01
 ---
 
 # Task 102: IPC fast path drops every message in a release build
 
-## Status: open — wave 0
+## Status: done (a9e1c01)
 
 ## Problem
 

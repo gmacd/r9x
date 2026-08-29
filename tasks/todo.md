@@ -41,11 +41,6 @@ Landing order is wave order, per the design doc. 102–108 are wave 0
 (ground truth): every measurement taken before they land is measuring
 through them.
 
-102. [ipc-debug-assert-drops-message.md](ipc-debug-assert-drops-message.md) —
-    `debug_assert!(queue.push(msg))` puts the enqueue inside the
-    assertion, so a `--release` image drops every fast-path message and
-    deadlocks on the first send. _Two lines; the real fix is a CI job
-    that boots a release image._
 103. [std-svc-asm-nomem.md](std-svc-asm-nomem.md) — the `svc` asm claims
     `nomem`, false for every buffer-carrying syscall. _UB the optimiser
     is entitled to act on; its SAFETY comment states the wrong reason._
