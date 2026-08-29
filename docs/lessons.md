@@ -1,7 +1,7 @@
 ---
 covers: aarch64/src/timer.rs, aarch64/src/gic.rs, port/src/mcslock.rs, port/src/ipc.rs, xtask/src
 sources: the code cited per entry; debugging sessions, dated
-verified: a9e1c01 (2026-08-29)
+verified: 192cdbb (2026-08-29)
 ---
 
 # Lessons learned
@@ -163,3 +163,37 @@ let Some((number, file)) = parse_entry_head(lines[i]) else {
 ```
 
 Witness: `xtask/src/tasks.rs`, the rebuild loop in `fix()`.
+
+## A timing test must not assert a host-scheduling-dependent count
+
+An integration image that proves “the periodic timer re-armed” by counting
+fires (`fast >= 2`) asserts a quantity that scales with the vCPU’s *host*
+service rate, not with the timer’s correctness.  The `timers` image runs
+under QEMU with its deadline measured on the physical counter (real host
+time); on a loaded runner the vCPU is starved for tens of ms, so a 5 ms
+timer’s first interrupt sits unhandled until the vCPU finally runs, the
+handler fires it **once** and re-arms to the clamped future — past the
+one-shot that has already cancelled it.  `fast` lands on 1 and `fast >= 2`
+fails: under load a *working* periodic and a *broken* one are
+indistinguishable by count (task 133).
+
+```rust
+// Good — one fire proves the hardware path (CVAL -> PPI -> GIC -> trap);
+// the re-arm logic is unit-tested against a mocked counter
+check!(fast >= 1, "fast periodic fired via the hardware path, {fast} fires");
+
+// Bad — fire count tracks vCPU time, not correctness; flakes on a loaded host
+check!(fast >= 2, "fast periodic re-armed before cancel, {fast} fires");
+```
+
+The split that makes it robust: the *logic* (re-arm, self-stop, cancel) is
+proven deterministically by unit tests against a mocked counter
+(`periodic_rearm_clamps_missed_deadlines`,
+`periodic_stops_when_callback_returns_false`); the integration test proves
+only what needs real hardware — that a fire arrives through the PPI, and
+that the level-triggered interrupt deasserts (the load-robust quiescence
+check).  Rule: in a timing test, assert a *fact the hardware produces*,
+never a *count that depends on how fast the host ran the guest*.
+
+Witness: `aarch64/tests/timers.rs`; the re-arm clamp at
+`aarch64/src/timer.rs:351`.
