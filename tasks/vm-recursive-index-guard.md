@@ -66,4 +66,18 @@ this repo's own pre-MMU walker.
   syscall.
 - Full `cargo xtask ci` green.
 
+## Outcome
+
+The guard is **level-0 only**, not the blanket `index == 511` the plan
+assumed.  The two walkers build their tables differently: the pre-MMU sets
+entry 511 of *every* table it allocates (so its blanket check is correct),
+but the post-MMU sets it in the *root* only — `next_mut` allocates every
+other table `clear()`ed — so a blanket post-MMU guard would refuse
+legitimate VAs whose L1 or L2 index is 511.  `RECURSIVE_SLOT` is shared by
+both walkers and `recursive_table_addr`.  Both halves are unit-tested: the
+recursive VA is refused (`map_to_refuses_the_recursive_slot`) and an
+L2-index-511 VA still maps (`map_to_allows_index_511_below_level0`).  The
+`SYS_MAP_MMIO` integration test is filed as task 134.  See the lesson in
+`docs/lessons.md`.
+
 Origin: architecture and correctness review of `f76d96a`, 2026-08-28.

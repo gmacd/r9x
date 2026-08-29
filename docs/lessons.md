@@ -197,3 +197,42 @@ never a *count that depends on how fast the host ran the guest*.
 
 Witness: `aarch64/tests/timers.rs`; the re-arm clamp at
 `aarch64/src/timer.rs:351`.
+
+## The recursive slot is root-only in the post-MMU; a blanket `index == 511` guard is wrong
+
+The self-pointer that lets the kernel reach its own page tables through the
+MMU (the recursive alias) is written by init, never by the walk — so a VA
+whose index is that slot must be refused, not followed, or the walk maps into
+the live page tables.  But *how far the self-pointer reaches* differs by
+phase, and the guard must match:
+
+- The **post-MMU** sets entry 511 of the *root* only: `next_mut` allocates
+  every other table `clear()`ed (`aarch64/src/vm.rs`).  So a VA with index 511
+  at L1 or L2 (e.g. `RECURSIVE_SLOT << 21`) is an *ordinary* slot and must
+  still map.  A blanket `if index == 511` guard — the obvious port of the
+  pre-MMU check — would wrongly refuse it.
+- The **pre-MMU** sets entry 511 of *every* table it allocates
+  (`new_table.entries[RECURSIVE_SLOT] = entry`, vminit.rs), so there index 511
+  is a self-pointer at any level and the blanket check is correct.
+
+```rust
+// Good (post-MMU) — only level 0 has the self-pointer
+if level == Level::Level0 && index == RECURSIVE_SLOT {
+    return Err(PageTableError::MappingRecursiveIndex);
+}
+
+// Bad (post-MMU) — refuses a legitimate L1/L2 index-511 VA
+if index == RECURSIVE_SLOT {
+    return Err(PageTableError::MappingRecursiveIndex);
+}
+```
+
+Rule: before porting a guard between two walkers, check whether they build
+their tables the same way.  These two share the *slot* (511) but not the
+*structure*, so they need different level checks.  The positive test
+(`map_to_allows_index_511_below_level0`) pins the post-MMU case: it fails under
+a blanket guard.  (KZERO is L0 index 256, not 511 — the kernel is not in the
+recursive slot.)
+
+Witness: `aarch64/src/vm.rs` (`RECURSIVE_SLOT`, `Table::next_mut`);
+`aarch64/src/pre_mmu/vminit.rs` (`next_mut`).

@@ -282,6 +282,14 @@ impl Level {
     }
 }
 
+/// The root's self-pointer slot: entry 511 of the level-0 table points back
+/// at the root, which is what makes the recursive walk (mapping physical
+/// memory through a fixed alias) possible.  It is written directly by init,
+/// never through the walk, so a VA whose level-0 index is this slot must be
+/// refused rather than followed -- following it maps into the live page
+/// tables.  `511` is the last of the 512 slots (9 index bits, all set).
+pub(crate) const RECURSIVE_SLOT: usize = 511;
+
 pub fn va_index(va: usize, level: Level) -> usize {
     match level {
         Level::Level0 => (va >> 39) & 0x1ff,
@@ -303,10 +311,15 @@ fn recursive_table_addr(pgtype: RootPageTableType, va: usize, level: Level) -> u
         Level::Level3 => 9,
     };
     let recursive_indices = match level {
-        Level::Level0 => (511 << 39) | (511 << 30) | (511 << 21) | (511 << 12),
-        Level::Level1 => (511 << 39) | (511 << 30) | (511 << 21),
-        Level::Level2 => (511 << 39) | (511 << 30),
-        Level::Level3 => 511 << 39,
+        Level::Level0 => {
+            (RECURSIVE_SLOT << 39)
+                | (RECURSIVE_SLOT << 30)
+                | (RECURSIVE_SLOT << 21)
+                | (RECURSIVE_SLOT << 12)
+        }
+        Level::Level1 => (RECURSIVE_SLOT << 39) | (RECURSIVE_SLOT << 30) | (RECURSIVE_SLOT << 21),
+        Level::Level2 => (RECURSIVE_SLOT << 39) | (RECURSIVE_SLOT << 30),
+        Level::Level3 => RECURSIVE_SLOT << 39,
     };
     let msbits = match pgtype {
         RootPageTableType::Kernel => 0xffff_0000_0000_0000,
@@ -356,6 +369,15 @@ impl Table {
     ) -> Result<&mut Table, PageTableError> {
         // Try to get a valid page table entry.
         let index = va_index(va, level);
+        // The recursive slot (level-0 index 511) is the root's self-pointer:
+        // following it aliases the root's own memory, so a caller choosing a
+        // VA in that region would map into the live page tables -- arbitrary
+        // physical access.  The slot is written directly by init, never
+        // through the walk; refuse it.  Only level 0 has the self-pointer;
+        // index 511 at L1/L2 is an ordinary slot and must still map.
+        if level == Level::Level0 && index == RECURSIVE_SLOT {
+            return Err(PageTableError::MappingRecursiveIndex);
+        }
         let mut entry = self.entries[index];
 
         if entry.valid() && !entry.is_table(level) {

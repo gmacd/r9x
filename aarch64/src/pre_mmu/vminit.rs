@@ -14,7 +14,7 @@ use crate::{
     pre_mmu::util::{putstr, putu64h},
     vm::{
         AccessPermission, Entry, Level, Mair, PageAllocator, PageSize, PageTableError, PhysPage4K,
-        RootPageTable, Shareable, Table, VaMapping, va_index,
+        RECURSIVE_SLOT, RootPageTable, Shareable, Table, VaMapping, va_index,
     },
 };
 
@@ -415,7 +415,10 @@ fn next_mut<'a, A: PageAllocator>(
 ) -> Result<&'a mut Table, PageTableError> {
     // Try to get a valid page table entry.  If it doesn't exist, create it.
     let index = va_index(va, level);
-    if index == 511 {
+    // This init sets the self-pointer in every table it allocates (see
+    // `new_table.entries[RECURSIVE_SLOT]` below), so the slot is dangerous at
+    // any level here -- unlike the post-MMU, where it is root-only.
+    if index == RECURSIVE_SLOT {
         putstr("error:vminit:next_mut:can't use the recursive index");
         return Err(PageTableError::MappingRecursiveIndex);
     }
@@ -449,7 +452,7 @@ fn next_mut<'a, A: PageAllocator>(
         table.entries[index] = entry;
 
         let new_table = unsafe { &mut *(page_pa.addr() as *mut Table) };
-        new_table.entries[511] = entry;
+        new_table.entries[RECURSIVE_SLOT] = entry;
         Ok(new_table)
     } else if !entry.is_table(level) {
         putstr("error:vminit:next_mut:entry is not a valid table entry");

@@ -203,6 +203,11 @@ refreshed 2026-08-27). Landing order per the audit: 46 → 50 → 47 → 45
     without its store-to-text kill test — the W^X row here is now the
     only planned pin of the `ro_user_text` encoding. **The BBM and SMP
     rows are tasks 105 and 124's acceptance evidence.**_
+134. [vm-recursive-va-integration-test.md](vm-recursive-va-integration-test.md) —
+    task 104's recursive-slot guard is unit-tested but not exercised at the
+    syscall: an image calls `SYS_MAP_MMIO` with an L0-index-511 VA and is
+    refused, and the task-91 VM matrix gains the row. _Task 104's deferred
+    integration half._
 
 ## 5. Cleanup — independent, no design debate
 
