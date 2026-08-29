@@ -35,9 +35,11 @@ unsafe fn trap(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> (u64, u64
     // read the result back out of `x0` (and, for a receive, `x3` / `x4`).
     // `clobber_abi("C")` tells the compiler the `svc` clobbers every other
     // caller-saved register (aarch64's `x0`–`x18`), so no live value held in
-    // one survives the call unmentioned; `nomem` and `nostack` hold because
-    // the syscall's memory and state effects are the kernel's, not direct
-    // reads or writes by this code.
+    // one survives the call unmentioned.  `nostack` holds — the syscall uses
+    // no red zone.  There is deliberately no `nomem`: the kernel dereferences
+    // the buffer pointers passed in the argument registers, so the block
+    // must be assumed to touch memory, and the compiler is left to treat the
+    // `svc` as a full memory barrier.
     unsafe {
         core::arch::asm!(
             "svc #0",
@@ -47,7 +49,7 @@ unsafe fn trap(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> (u64, u64
             inout("x3") x3,
             inout("x4") x4,
             inout("x0") x0,
-            options(nomem, nostack),
+            options(nostack),
             clobber_abi("C"),
         );
     }
