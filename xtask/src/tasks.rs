@@ -40,13 +40,43 @@ const END_MARKER: &str = "<!-- xtask:tasks end -->";
 /// A finding. `Malformed` is the only class that fails the run.
 #[derive(Debug, PartialEq, Eq)]
 enum Finding {
-    Malformed { file: String, detail: String },
-    StatusMismatch { file: String, front: String, prose: String },
-    Misplaced { file: String, detail: String },
-    UnresolvedRef { file: String, line: u32, id: String },
-    DuplicateId { id: String, files: Vec<String> },
-    MissingCommit { file: String, candidate: String },
-    IndexDrift { detail: String },
+    Malformed {
+        file: String,
+        detail: String,
+    },
+    StatusMismatch {
+        file: String,
+        front: String,
+        prose: String,
+    },
+    /// The H1 carries a `Task <n>:` number that disagrees with `id:`
+    /// (or with no `id:` at all). `h1` is the number, `id` the front
+    /// matter's.
+    H1Mismatch {
+        file: String,
+        h1: String,
+        id: Option<String>,
+    },
+    Misplaced {
+        file: String,
+        detail: String,
+    },
+    UnresolvedRef {
+        file: String,
+        line: u32,
+        id: String,
+    },
+    DuplicateId {
+        id: String,
+        files: Vec<String>,
+    },
+    MissingCommit {
+        file: String,
+        candidate: String,
+    },
+    IndexDrift {
+        detail: String,
+    },
 }
 
 impl Finding {
@@ -55,6 +85,13 @@ impl Finding {
             Finding::Malformed { file, detail } => format!("malformed      {file}: {detail}"),
             Finding::StatusMismatch { file, front, prose } => {
                 format!("status/prose   {file}: front matter says `{front}`, prose says `{prose}`")
+            }
+            Finding::H1Mismatch { file, h1, id } => {
+                let id_part = match id {
+                    Some(i) => format!("front matter says `id: {i}`"),
+                    None => "there is no `id:`".to_string(),
+                };
+                format!("h1/id          {file}: H1 claims `Task {h1}:`, but {id_part}")
             }
             Finding::Misplaced { file, detail } => format!("misplaced      {file}: {detail}"),
             Finding::UnresolvedRef { file, line, id } => {
@@ -429,6 +466,20 @@ fn file_findings(tree: &Tree) -> Vec<Finding> {
             });
         }
 
+        // The H1 may carry the task's number (`# Task 129: ...`); when it
+        // does, it must agree with `id:` — a wrong number that exists
+        // elsewhere resolves silently as a prose reference (the "Task 101"
+        // collision, recorded in todo.md).
+        if let Some(n) = h1_task_number(&t.body)
+            && t.id.as_deref() != Some(n)
+        {
+            findings.push(Finding::H1Mismatch {
+                file: t.rel.clone(),
+                h1: n.to_string(),
+                id: t.id.clone(),
+            });
+        }
+
         // Placement: done files live in done/, and nothing else does.
         if t.in_done_dir && t.status != "done" {
             findings.push(Finding::Misplaced {
@@ -487,6 +538,16 @@ fn file_findings(tree: &Tree) -> Vec<Finding> {
     findings
 }
 
+/// The number in the file's H1 when it carries a `# Task <n>:` form.
+/// Slug-form H1s (`# r9: ...`, `# stage6-...`) and the number-less
+/// `# Task: ...` carry no number and are not checked.
+fn h1_task_number(body: &str) -> Option<&str> {
+    let h1 = body.lines().find(|l| l.starts_with("# "))?;
+    let rest = h1.trim_start_matches("# ");
+    let (num, _) = rest.strip_prefix("Task ")?.split_once(':')?;
+    is_task_id(num).then_some(num)
+}
+
 /// The first hash inside the first parenthesised group of a
 /// `## Status: done (...)` line, if any.
 fn recover_commit_from_status_line(status_line: &Option<String>) -> Option<String> {
@@ -515,6 +576,29 @@ fn index_findings(tree: &Tree) -> Vec<Finding> {
         }
     }
 
+    // A same-named `x.md` and `done/x.md` shadow each other: the index
+    // checks key tasks by basename (a slug-named task's identity), so the
+    // pair would be checked as one task.
+    let top_names: BTreeSet<&str> = tree
+        .tasks
+        .iter()
+        .filter(|t| !t.in_done_dir)
+        .map(|t| t.rel.rsplit('/').next().unwrap_or(&t.rel))
+        .collect();
+    for t in &tree.tasks {
+        if !t.in_done_dir {
+            continue;
+        }
+        let name = t.rel.rsplit('/').next().unwrap_or(&t.rel);
+        if top_names.contains(name) {
+            findings.push(Finding::IndexDrift {
+                detail: format!(
+                    "{name} exists both at the top level and in done/; the index keys tasks by basename, so the pair shadows each other"
+                ),
+            });
+        }
+    }
+
     if !tree.todo_marked {
         findings.push(Finding::IndexDrift {
             detail:
@@ -524,10 +608,15 @@ fn index_findings(tree: &Tree) -> Vec<Finding> {
     } else {
         // List numbers are identities too: two entries sharing a number
         // collide, and a number claimed by a file's id while the entry links
-        // a different file is a duplicate as well.
+        // a different file is a duplicate as well. The same file listed
+        // under two numbers is drift of the list itself (number collisions
+        // are checked; filename collisions would reconcile as though two
+        // tasks shared one file).
         let mut nums: BTreeMap<&str, Vec<u32>> = BTreeMap::new();
+        let mut by_file: BTreeMap<&str, Vec<(&str, u32)>> = BTreeMap::new();
         for (num, file, line) in &tree.listed {
             nums.entry(num.as_str()).or_default().push(*line);
+            by_file.entry(file.as_str()).or_default().push((num.as_str(), *line));
             // Compare by basename: a task that moved to done/ keeps its
             // bare filename in a lingering entry while claimants carry
             // the moved rel path (`done/foo.md`).
@@ -547,6 +636,18 @@ fn index_findings(tree: &Tree) -> Vec<Finding> {
                 findings.push(Finding::DuplicateId {
                     id: num.to_string(),
                     files: lines.iter().map(|l| format!("todo.md:{l}")).collect(),
+                });
+            }
+        }
+        for (file, entries) in &by_file {
+            if entries.len() > 1 {
+                let where_ = entries
+                    .iter()
+                    .map(|(n, l)| format!("number {n} (line {l})"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                findings.push(Finding::IndexDrift {
+                    detail: format!("todo.md lists {file} more than once: {where_}"),
                 });
             }
         }
@@ -1467,6 +1568,107 @@ mod tests {
             file_findings(&tree).into_iter().chain(index_findings(&tree)).collect::<Vec<_>>();
         assert!(findings.iter().any(|f| matches!(f, Finding::IndexDrift { .. })), "{findings:?}");
         assert!(!findings.iter().any(|f| matches!(f, Finding::DuplicateId { .. })), "{findings:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn h1_number_must_agree_with_id() {
+        let dir = std::env::temp_dir().join(format!("xtask-tasks-h1-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let make = |rel: &str, text: &str| {
+            let p = dir.join(rel);
+            if let Some(parent) = p.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&p, text).unwrap();
+        };
+        make("bad-h1.md", "---\nid: 5\nstatus: open\n---\n\n# Task 6: Wrong number\n");
+        make("ok-h1.md", "---\nid: 7\nstatus: open\n---\n\n# Task 7: Right number\n");
+        // A slug-form H1 carries no number and is not checked.
+        make("slug-h1.md", "---\nid: 8\nstatus: open\n---\n\n# r9: a slug heading\n");
+        let tree = load(&dir).expect("loads");
+        let findings = file_findings(&tree);
+        let h1: Vec<&Finding> =
+            findings.iter().filter(|f| matches!(f, Finding::H1Mismatch { .. })).collect();
+        assert_eq!(h1.len(), 1, "{h1:?}");
+        let rendered = h1[0].render();
+        assert!(rendered.contains("bad-h1.md"), "{rendered}");
+        assert!(rendered.contains("Task 6"), "{rendered}");
+        assert!(rendered.contains("id: 5"), "{rendered}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn h1_number_without_id_is_a_finding() {
+        // `# Task 5:` claims a number the front matter does not record —
+        // the "Task 101" collision shape.
+        let dir = std::env::temp_dir().join(format!("xtask-tasks-h1-noid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("no-id.md"),
+            "---\nstatus: open\n---\n\n# Task 5: No id in front matter\n",
+        )
+        .unwrap();
+        let tree = load(&dir).expect("loads");
+        let findings = file_findings(&tree);
+        let h1: Vec<&Finding> =
+            findings.iter().filter(|f| matches!(f, Finding::H1Mismatch { .. })).collect();
+        assert_eq!(h1.len(), 1, "{h1:?}");
+        assert!(h1[0].render().contains("there is no `id:`"), "{}", h1[0].render());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_file_listed_twice_is_drift() {
+        // Two entries linking the same file under different numbers:
+        // list drift, not a duplicate id (the numbers are each claimed
+        // once).
+        let dir = std::env::temp_dir().join(format!("xtask-tasks-twice-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("todo.md"),
+            format!("# t\n\n{BEGIN_MARKER}\n## 1. S\n\n5. [x.md](x.md) — a\n6. [x.md](x.md) — b\n\n{END_MARKER}\n"),
+        )
+        .unwrap();
+        fs::write(dir.join("x.md"), "---\nid: 5\nstatus: open\n---\n\n# x\n").unwrap();
+        let tree = load(&dir).expect("loads");
+        let findings = index_findings(&tree);
+        let drift: Vec<&Finding> =
+            findings.iter().filter(|f| matches!(f, Finding::IndexDrift { .. })).collect();
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        let rendered = drift[0].render();
+        assert!(rendered.contains("x.md"), "{rendered}");
+        assert!(rendered.contains("number 5"), "{rendered}");
+        assert!(rendered.contains("number 6"), "{rendered}");
+        assert!(!findings.iter().any(|f| matches!(f, Finding::DuplicateId { .. })), "{findings:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn top_level_and_done_basename_collision_is_reported() {
+        let dir = std::env::temp_dir().join(format!("xtask-tasks-shadow-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let make = |rel: &str, text: &str| {
+            let p = dir.join(rel);
+            if let Some(parent) = p.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&p, text).unwrap();
+        };
+        make(
+            "todo.md",
+            &format!("# t\n\n{BEGIN_MARKER}\n## 1. S\n\n30. [x.md](x.md) — live\n\n{END_MARKER}\n"),
+        );
+        make("x.md", "---\nid: 30\nstatus: open\n---\n\n# x\n");
+        make("done/x.md", "---\nid: 31\nstatus: done\ncommit: d773a37\n---\n\n# x, old\n");
+        let tree = load(&dir).expect("loads");
+        let findings = index_findings(&tree);
+        let drift: Vec<&Finding> =
+            findings.iter().filter(|f| matches!(f, Finding::IndexDrift { .. })).collect();
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        assert!(drift[0].render().contains("shadows each other"), "{}", drift[0].render());
         let _ = fs::remove_dir_all(&dir);
     }
 
