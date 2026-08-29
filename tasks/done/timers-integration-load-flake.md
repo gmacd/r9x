@@ -1,11 +1,12 @@
 ---
 id: 133
-status: open
+status: done
+commit: b11022f
 ---
 
 # Task 133: the `timers` integration test asserts a host-load-dependent fire count
 
-## Status: open
+## Status: done (b11022f)
 
 ## Problem
 

@@ -203,10 +203,6 @@ refreshed 2026-08-27). Landing order per the audit: 46 → 50 → 47 → 45
     without its store-to-text kill test — the W^X row here is now the
     only planned pin of the `ro_user_text` encoding. **The BBM and SMP
     rows are tasks 105 and 124's acceptance evidence.**_
-133. [timers-integration-load-flake.md](timers-integration-load-flake.md) —
-    the `timers` integration test asserts a fire count that scales with
-    the vCPU's host service rate, so it flakes on a loaded runner. _Assert
-    the fire path (`>= 1`), not the count; the re-arm logic is unit-tested._
 
 ## 5. Cleanup — independent, no design debate
 
