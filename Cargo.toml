@@ -1,6 +1,24 @@
 [workspace]
 resolver = "2"
-members = ["aarch64", "x86_64", "port", "riscv64", "xtask", "abi", "core", "std", "cmd/console", "cmd/nameserver", "cmd/init", "cmd/heaptask", "cmd/child", "cmd/display", "cmd/mailbox", "cmd/faulttest", "cmd/consclient"]
+members = [
+    "aarch64",
+    "x86_64",
+    "port",
+    "riscv64",
+    "xtask",
+    "abi",
+    "core",
+    "std",
+    "cmd/console",
+    "cmd/nameserver",
+    "cmd/init",
+    "cmd/heaptask",
+    "cmd/child",
+    "cmd/display",
+    "cmd/mailbox",
+    "cmd/faulttest",
+    "cmd/consclient",
+]
 
 [workspace.lints.rust]
 # Kernel code must spell out every unsafe operation, even inside an unsafe fn.
@@ -8,10 +26,6 @@ unsafe_op_in_unsafe_fn = "forbid"
 # The build injects --cfg from lib/config_*.toml; a typo there silently drops code.
 unexpected_cfgs = { level = "deny", check-cfg = [
     'cfg(platform, values("nezha", "virt"))',
-    # Set by the build for release images (xtask), so kernel code can log the
-    # profile at boot (task 102).  Declared here so a debug build, which does
-    # not set it, does not reject the #[cfg] naming it.
-    'cfg(release_profile)',
 ] }
 meta_variable_misuse = "warn"
 non_ascii_idents = "deny"
@@ -26,11 +40,6 @@ fn_to_numeric_cast_any = "deny"
 mem_forget = "deny"
 # Evaluation order is semantics when the operands are volatile MMIO.
 mixed_read_write_in_expression = "deny"
-# A side effect inside debug_assert! is dropped in release builds (the
-# expression is never evaluated), so the effect vanishes: the IPC fast path
-# enqueued inside the assert (task 102). Catches a direct &mut receiver; a
-# receiver through a DerefMut guard slips past it, so the release-boot CI
-# (task 102) is the load-bearing guard — not this lint.
 debug_assert_with_mut_call = "deny"
 deref_by_slicing = "warn"
 used_underscore_binding = "warn"
@@ -44,10 +53,6 @@ opt-level = 1
 
 [profile.release]
 panic = "abort"
-# Task 102: the kernel is still young, so a release image keeps its checks
-# rather than trade correctness for speed that has not been measured.  Several
-# of the arithmetic bugs in tasks 106/107 are caught by exactly these.  The
-# boot log (port::devcons::release_checks_note) reminds us to drop this once
-# the speed is actually wanted.
+# Enable release checks at this early stage of development
 debug-assertions = true
 overflow-checks = true

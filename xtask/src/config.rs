@@ -286,13 +286,6 @@ pub fn apply_to_build_step(
     apply_build(cmd, &mut rustflags, config);
     apply_platform_config(cmd, &mut rustflags, config);
     apply_link(&mut rustflags, config, target, profile, workspace_path)?;
-    // A release-image marker cfg so kernel code can log the profile at boot
-    // (task 102).  Declared in the workspace check-cfg; set here, and only for
-    // release builds, so a debug build never carries it.
-    if *profile == Profile::Release {
-        rustflags.push("--cfg".into());
-        rustflags.push("release_profile".into());
-    }
     apply_rustflags(cmd, &rustflags);
     Ok(())
 }

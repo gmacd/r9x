@@ -106,20 +106,14 @@ macro_rules! print {
     }};
 }
 
-/// Log at boot whether this release image carries the extra checks that
-/// `[profile.release]` currently enables (task 102): while the kernel is
-/// young, a release build keeps debug-assertions and overflow-checks on.
-/// Gated on `release_profile` (a marker cfg the build sets for release
-/// images) and `debug_assertions` — `overflow-checks` is a codegen option,
-/// not a cfg, so it is named in the text rather than tested.  The line is
-/// the reminder to drop those profile overrides once speed is actually
-/// wanted — it compiles away the day `debug-assertions` does.
 pub fn release_checks_note() {
-    #[cfg(all(release_profile, debug_assertions))]
+    #[cfg(debug_assertions)]
     {
-        println!(
-            "release image: debug-assertions + overflow-checks enabled (task 102); drop from [profile.release] once speed is measured"
-        );
+        println!("debug-assertions enabled");
+    }
+    #[cfg(overflow_checks)]
+    {
+        println!("overflow-checks enabled");
     }
 }
 
