@@ -41,9 +41,6 @@ Landing order is wave order, per the design doc. 102–108 are wave 0
 (ground truth): every measurement taken before they land is measuring
 through them.
 
-103. [std-svc-asm-nomem.md](std-svc-asm-nomem.md) — the `svc` asm claims
-    `nomem`, false for every buffer-carrying syscall. _UB the optimiser
-    is entitled to act on; its SAFETY comment states the wrong reason._
 104. [vm-recursive-index-guard.md](vm-recursive-index-guard.md) —
     `next_mut` is missing the `index == 511` guard its pre-MMU twin has,
     so a user-chosen VA writes a leaf into an L2 slot as a *table*

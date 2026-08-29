@@ -1,12 +1,12 @@
 ---
 id: 103
-status: open
-wave: 0
+status: done
+commit: 3c5f3b0
 ---
 
 # Task 103: the `svc` inline asm declares `nomem`, which is false
 
-## Status: open — wave 0
+## Status: done (3c5f3b0)
 
 ## Problem
 
