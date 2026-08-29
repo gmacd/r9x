@@ -4,7 +4,7 @@ status: done
 
 # console-server
 
-**From:** [stage 5 console-server design](plans/microkernel-console-server.md)
+**From:** [stage 5 console-server design](../plans/microkernel-console-server.md)
 — the proof of concept: a user-space process maps and owns device MMIO.
 **Depends on:** `console-mmapmmio` (the `SYSMAPMMIO` syscall).
 

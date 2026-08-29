@@ -60,6 +60,8 @@ staleness signal.
 Wire it into `.github/workflows/xtask.yml`'s `checks` job, and into
 `cargo xtask ci` so the local gate matches CI.
 
+The code for the task should live in its own file - xtask/main.rs is getting huge.
+
 ## Tests
 
 - Unit: header parsing — well-formed, missing fields, a bad commit, a glob.

@@ -5,7 +5,7 @@ status: done
 # server-console-package: the console server as a built Rust executable
 
 Task 3 of 4 in the user-binary-loading arc. Plan:
-[plans/user-binary-loading.md](plans/user-binary-loading.md).
+[plans/user-binary-loading.md](../plans/user-binary-loading.md).
 
 ## Goal
 

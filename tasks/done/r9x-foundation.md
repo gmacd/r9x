@@ -5,7 +5,7 @@ status: done
 # r9x-foundation: the r9x target — target + std backend + servers (Tier 0)
 
 Task 1 of 7 in the r9x arc. Plan:
-[plans/r9x-target-std-backend.md](plans/r9x-target-std-backend.md).
+[plans/r9x-target-std-backend.md](../plans/r9x-target-std-backend.md).
 The initial deliverable: a **`userland/`** subtree inside the **one `r9x` repo**
 (your fork, `gmacd/r9x`) that holds *all* the r9 user-space — the target (the
 base distribution every r9x executable links against: the specs, `r9x_abi`,

@@ -5,7 +5,7 @@ status: done
 # r9-syscall-proc-control: wait/reap + kill — completing the process model (Tier 3.1)
 
 Task 5 of 7 in the r9x arc. Plan:
-[plans/r9x-target-std-backend.md](plans/r9x-target-std-backend.md).
+[plans/r9x-target-std-backend.md](../plans/r9x-target-std-backend.md).
 Needs Task 3 (`sys_spawn` produces children to reap) and Task 4 (reaping
 should be able to wait with a deadline). Rationale: the process manager (init,
 stage 7) must *manage* — detect a dead server and restart it. Today a process

@@ -5,7 +5,7 @@ status: done
 # process-spawn-elf: the Image enum and the single spawn
 
 Task 2 of 4 in the user-binary-loading arc. Plan:
-[plans/user-binary-loading.md](plans/user-binary-loading.md).
+[plans/user-binary-loading.md](../plans/user-binary-loading.md).
 
 ## Goal
 

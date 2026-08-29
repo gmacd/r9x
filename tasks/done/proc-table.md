@@ -4,7 +4,7 @@ status: done
 
 # proc-table: the PCB, the proc table, and the kstack vector
 
-Task 2 of 3 in the preemption arc. Plan: [plans/preemption.md](plans/preemption.md).
+Task 2 of 3 in the preemption arc. Plan: [plans/preemption.md](../plans/preemption.md).
 Lands after svc-yield; lands before tick-preemption.
 
 ## Goal

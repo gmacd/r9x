@@ -4,7 +4,7 @@ status: open
 depends-on: 128
 ---
 
-# Task 129: `cargo xtask tasks --check` — validate the task tree and render the index
+# Task 129: `cargo xtask tasks --check` — validate the task tree and reconcile the index
 
 ## Problem
 
@@ -37,14 +37,19 @@ An xtask subcommand with two modes.
 - a `done` task with no `commit:` where one is recoverable from its prose;
 - open tasks missing from `todo.md`'s list, and listed tasks that are done.
 
-`--fix` (or a separate `--render`) regenerates only the *generated* section of
-`todo.md` — the open-task list, grouped by wave. `todo.md`'s narrative header
-is hand-written and must be preserved verbatim: it is a dated audit log of
-review passes, and it is the most valuable part of the file. Mark the
+`--fix` reconciles the marked list region of `todo.md` in place — dropping
+entry blocks whose task is done or gone, and appending bare entries for open
+tasks that are unlisted (a human places each into a section). It does not
+regenerate the region: the sections are hand-written and thematic rather
+than grouped by wave, and the per-entry notes are the most valuable part of
+the file. `todo.md`'s narrative header is likewise hand-written and must be
+preserved verbatim: it is a dated audit log of review passes. Mark the
 generated region with explicit begin/end comments and never write outside it.
 
 Same reporting discipline as task 128: report, do not block; non-zero exit
 only for malformed front matter.
+
+The code for the task should live in its own file - xtask/main.rs is getting huge.
 
 ## Tests
 
@@ -58,7 +63,7 @@ only for malformed front matter.
 
 - `cargo xtask tasks --check` runs clean over `tasks/`, or prints a list of
   genuine inconsistencies to fix.
-- `--fix` regenerates `todo.md`'s list section without touching its narrative.
+- `--fix` reconciles `todo.md`'s list region without touching its narrative.
 - CI runs `--check` in the `checks` job; `cargo xtask ci` runs it locally.
 
 Origin: moving `tasks/` into the repo, 2026-08-28. The front matter was

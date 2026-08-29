@@ -5,7 +5,7 @@ status: done
 # r9-syscall-heap: a kernel heap — the first service a real std needs (Tier 1.1)
 
 Task 2 of 7 in the r9x arc. Plan:
-[plans/r9x-target-std-backend.md](plans/r9x-target-std-backend.md).
+[plans/r9x-target-std-backend.md](../plans/r9x-target-std-backend.md).
 Needs Task 1 (the r9x target + `r9x_std::rt` static allocator to replace).
 Rationale (Decision 7, order 1 of 3): the kernel owns the page tables and the
 per-process `Aspace`, so a process's heap can only grow by a kernel call —

@@ -5,7 +5,7 @@ status: done
 # stage6-nameserver-server: the nameserver — a user-space name→channel map
 
 Stage 6a, task 2 of 4. Plan:
-[plans/microkernel-nameserver.md](plans/microkernel-nameserver.md).
+[plans/microkernel-nameserver.md](../plans/microkernel-nameserver.md).
 Needs task 1 (`SYCCREATECHAN`) — though the nameserver's *own* pair is handed to
 it by the spawner (task 4), it must be a real user-space server on message
 syscalls.

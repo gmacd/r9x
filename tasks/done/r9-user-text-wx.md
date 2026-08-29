@@ -1,7 +1,7 @@
 ---
 id: 96
 status: done
-closed: d773a37 (2026-08-27)
+commit: d773a37
 ---
 
 # Task 96: User text is mapped writable + executable

@@ -1,11 +1,12 @@
 ---
 id: 95
 status: done
+commit: 4144216
 ---
 
 # Task 95: Close a process's channels on exit/kill
 
-## Status: open
+## Status: done (4144216)
 
 ## Problem
 

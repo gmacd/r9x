@@ -1,5 +1,7 @@
 ---
+id: 90b
 status: done
+commit: 8e26fbd
 ---
 
 # r9: backtrace function names
@@ -8,7 +10,7 @@ status: done
 **Status:** done (8e26fbd + c69cdcb, 2026-08-27)
 **Origin:** user request (2026-07-03) — "provide more information with
 backtraces — e.g. function names, line numbers, etc if available"
-**Plan:** [r9-backtrace-symbols.md](plans/r9-backtrace-symbols.md)
+**Plan:** [r9-backtrace-symbols.md](../plans/r9-backtrace-symbols.md)
 
 ## Problem
 

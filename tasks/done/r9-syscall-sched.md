@@ -5,7 +5,7 @@ status: done
 # r9-syscall-sched: priority + inheritance — real-time control (Tier 3.2)
 
 Task 6 of 7 in the r9x arc. Plan:
-[plans/r9x-target-std-backend.md](plans/r9x-target-std-backend.md).
+[plans/r9x-target-std-backend.md](../plans/r9x-target-std-backend.md).
 Needs Tasks 3–5 (you set a priority on processes you can spawn, wait on, and
 kill). Rationale (the QNX doctrine, `microkernel-and-firmware.md`):
 determinism is the product, and priority inheritance bounds priority

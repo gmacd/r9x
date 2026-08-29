@@ -5,7 +5,7 @@ status: done
 # r9-syscall-clock-wait: a clock + bounded wait — the 60 Hz heartbeat (Tier 2.1)
 
 Task 4 of 7 in the r9x arc. Plan:
-[plans/r9x-target-std-backend.md](plans/r9x-target-std-backend.md).
+[plans/r9x-target-std-backend.md](../plans/r9x-target-std-backend.md).
 Needs Tasks 2–3 (a paced display server is a *spawned* process that *
 allocates*). Rationale (Decision 7, order 3 of 3, with the Amiga dissent
 recorded): the standing goal is to keep the display at 60 Hz while a user-space

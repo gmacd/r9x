@@ -5,7 +5,7 @@ status: done
 # stage6-namespace-test: the namespace image — resolve a name, round-trip a byte
 
 Stage 6a, task 4 of 4. Plan:
-[plans/microkernel-nameserver.md](plans/microkernel-nameserver.md).
+[plans/microkernel-nameserver.md](../plans/microkernel-nameserver.md).
 Needs tasks 1–3. This is the proof the slice works end to end.
 
 ## Goal

@@ -1,11 +1,12 @@
 ---
 id: 87
 status: done
+commit: ad739c6
 ---
 
 # Task 87: Mailbox server maps the wrong PA — external abort, not a VM bug
 
-## Status: open
+## Status: done (ad739c6)
 
 Supersedes `r9-user-mmio-translation-fault.md` (2026-08-27 audit). The
 symptom is the same; the diagnosis there was wrong in three load-bearing

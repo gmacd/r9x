@@ -5,7 +5,7 @@ status: done
 # elf-reader-port: a pure ELF64 reader in `port`
 
 Task 1 of 4 in the user-binary-loading arc. Plan:
-[plans/user-binary-loading.md](plans/user-binary-loading.md).
+[plans/user-binary-loading.md](../plans/user-binary-loading.md).
 
 ## Goal
 

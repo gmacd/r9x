@@ -361,10 +361,10 @@ Considered and refused, so it is not re-proposed in six months:
 ## Tasks
 
 Filed now (actionable):
-- [microkernel-priority-pi.md](../microkernel-priority-pi.md) — stage 1:
+- [microkernel-priority-pi.md](../done/microkernel-priority-pi.md) — stage 1:
   priority + priority inheritance in `aarch64::process`. First, because stage 2
   stands on the scheduler being able to keep a determinism claim.
-- [microkernel-ipc-core.md](../microkernel-ipc-core.md) — stage 2: `port::ipc`
+- [microkernel-ipc-core.md](../done/microkernel-ipc-core.md) — stage 2: `port::ipc`
   (`Channel`, bounded `Message`, send/receive/reply, fast+slow path, PI on the
   channel). The central primitive; aarch64 reference, x86-64/riscv64 gate-green
   but not yet exercised.

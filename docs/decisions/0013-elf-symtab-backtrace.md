@@ -4,7 +4,7 @@ status: accepted
 
 # 0013 — Fault backtraces symbolicate from the ELF `.symtab` at spawn
 
-- **Status**: accepted — implemented (`aarch64/src/backtrace.rs`, `aarch64/src/demangle.rs`; commits `e88a6bb`/`8e26fbd` for the `.symtab` backtrace, task 90, and `c69cdcb` for the demangler, task 90c)
+- **Status**: accepted — implemented (`aarch64/src/backtrace.rs`, `aarch64/src/demangle.rs`; commit `e88a6bb` for the fault backtrace, task 90, `8e26fbd` for the `.symtab` names, task 90b, and `c69cdcb` for the demangler, task 90c)
 - **Date**: 2026-08-28 (record written from `tasks/plans/r9-backtrace-symbols.md`)
 - **Context**: `tasks/plans/r9-backtrace-symbols.md`
 

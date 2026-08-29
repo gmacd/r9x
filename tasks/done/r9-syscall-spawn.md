@@ -1,11 +1,12 @@
 ---
+id: 74
 status: done
 ---
 
 # r9-syscall-spawn: process creation + the image registry (Tier 1.2)
 
 Task 3 of 7 in the r9x arc. Plan:
-[plans/r9x-target-std-backend.md](plans/r9x-target-std-backend.md).
+[plans/r9x-target-std-backend.md](../plans/r9x-target-std-backend.md).
 Needs Task 2 (a spawned process must be able to allocate). Rationale (Decision
 7, order 2 of 3): multi-process is the larger capability unlock and the thing
 that makes r9 an OS rather than a monitor. It unblocks (a) `r9x_std::thread`

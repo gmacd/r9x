@@ -30,6 +30,14 @@ jobs:
         run: cargo xtask check
       - name: Run tests
         run: cargo xtask test
+      # xtask is host-only and outside TestStep's package list; its tests
+      # carry the task-tree validator (task 129).
+      - name: Run xtask tests
+        run: cargo test -p xtask --quiet
+      # Report, do not block: findings print for a human's eye; the exit
+      # is non-zero only for malformed front matter.
+      - name: Validate task tree
+        run: cargo xtask tasks --check
 
   aarch64-tests:
     # Arch unit tests execute, so TestStep runs an arch package only on

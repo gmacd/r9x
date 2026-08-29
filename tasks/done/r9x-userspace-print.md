@@ -1,10 +1,11 @@
 ---
 status: done
+commit: fd7e96c
 ---
 
 # Task: User-space print facility (SYS_PRINT)
 
-## Status: open
+## Status: done (fd7e96c)
 
 ## Context
 

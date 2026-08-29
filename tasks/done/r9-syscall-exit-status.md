@@ -1,11 +1,12 @@
 ---
 id: 100
 status: done
+commit: 4144216
 ---
 
 # Task 100: SYSEXIT reports the svc number as the exit status, not the exit code
 
-## Status: open
+## Status: done (4144216)
 
 ## Problem
 

@@ -5,7 +5,7 @@ status: done
 # stage6-createchan-syscall: SYCCREATECHAN — a user process can make a channel
 
 Stage 6a, task 1 of 4. Plan:
-[plans/microkernel-nameserver.md](plans/microkernel-nameserver.md).
+[plans/microkernel-nameserver.md](../plans/microkernel-nameserver.md).
 *Prerequisite for tasks 2–4.*
 
 ## Goal

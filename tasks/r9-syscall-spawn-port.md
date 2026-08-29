@@ -34,7 +34,7 @@ x86-64's `Mach`/`vsvm` layer has its own context model.
    the acceptance gates.
 
 Related deferrals that trigger with this task:
-- task 39 (timer table → `port/`) — `SYS_RECEIVE_AT`/`SYS_CLOCK` on a
+- task 80 (timer table → `port/`) — `SYS_RECEIVE_AT`/`SYS_CLOCK` on a
   second arch need the shared table;
 - task 90's riscv64/x86-64 half (the backtrace walk is per-arch frame
   layout).

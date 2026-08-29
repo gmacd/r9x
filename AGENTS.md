@@ -32,6 +32,9 @@ The project must be free of errors and warnings at all times, including those fr
   - runs `port` plus the host's own arch package; a foreign arch package's
     tests only execute on its native host, so they are skipped with a
     printed notice (CI's aarch64-tests job carries the arm half)
+- Task tree (front matter, cross-references, todo.md list agreement):
+  - `cargo xtask tasks --check` (in `ci`; `--fix` reconciles todo.md's
+    marked list region; report, do not block, except malformed front matter)
 - Run a guest (bounded: `--timeout` seconds, default 15, kills the
   guest when it expires):
   - kernel image: `cargo xtask qemu --arch aarch64`

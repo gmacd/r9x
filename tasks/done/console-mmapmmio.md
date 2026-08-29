@@ -4,7 +4,7 @@ status: done
 
 # console-mmapmmio
 
-**From:** [stage 5 console-server design](plans/microkernel-console-server.md)
+**From:** [stage 5 console-server design](../plans/microkernel-console-server.md)
 — first user-space device MMIO ownership via `SYSMAPMMIO`.
 **Depends on:** stage 3 (per-process Aspace) — done.
 

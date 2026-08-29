@@ -1,8 +1,10 @@
 ---
+id: 88
 status: done
+commit: 9b3920a
 ---
 
-# Task: Console server as a persistent user-space driver
+# Task 88: Console server as a persistent user-space driver
 
 ## Status: done — server half (9b3920a) + client API (task 88 build)
 

@@ -4,7 +4,7 @@ status: done
 
 # svc-yield: a syscall that returns
 
-Task 1 of 3 in the preemption arc. Plan: [plans/preemption.md](plans/preemption.md).
+Task 1 of 3 in the preemption arc. Plan: [plans/preemption.md](../plans/preemption.md).
 
 ## Goal
 

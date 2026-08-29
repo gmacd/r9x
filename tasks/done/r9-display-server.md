@@ -5,7 +5,7 @@ status: done
 # r9-display-server: the 60 Hz heartbeat, a user-space process (Tier 2.2)
 
 Task 5 of 7 in the r9x arc (after the clock/wait). Plan:
-[plans/r9-display-server.md](plans/r9-display-server.md).
+[plans/r9-display-server.md](../plans/r9-display-server.md).
 Gated on Task 75 (SYS_CLOCK + SYS_RECEIVE_AT, done 2026-08-25). The display
 server is the first user-space process that owns a framebuffer and paces its
 frame loop — the Amiga's demoscene routine in user-space.

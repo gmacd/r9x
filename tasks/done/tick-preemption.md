@@ -4,7 +4,7 @@ status: done
 
 # tick-preemption: the tick that preempts
 
-Task 3 of 3 in the preemption arc. Plan: [plans/preemption.md](plans/preemption.md).
+Task 3 of 3 in the preemption arc. Plan: [plans/preemption.md](../plans/preemption.md).
 Lands after proc-table.
 
 ## Goal

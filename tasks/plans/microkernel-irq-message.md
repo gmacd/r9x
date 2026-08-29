@@ -323,8 +323,8 @@ kernel never touches the GPU's MMIO.
 
 ## Tasks
 
-- [irq-route.md](../irq-route.md) — the routing table, `try_send`, and the
+- [irq-route.md](../done/irq-route.md) — the routing table, `try_send`, and the
   `SYSIRQCLAIM` syscall. The aarch64 reference implementation.
-- [irq-integration.md](../irq-integration.md) — the integration image: a
+- [irq-integration.md](../done/irq-integration.md) — the integration image: a
   user-space process claims a SPI, the GIC fires, the process receives a
   message on its channel.

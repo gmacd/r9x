@@ -5,7 +5,7 @@ status: done
 # stage6-console-publishes: the console server takes a name
 
 Stage 6a, task 3 of 4. Plan:
-[plans/microkernel-nameserver.md](plans/microkernel-nameserver.md).
+[plans/microkernel-nameserver.md](../plans/microkernel-nameserver.md).
 Needs tasks 1 (`SYCCREATECHAN`) and 2 (the nameserver to bind to).
 
 ## Goal

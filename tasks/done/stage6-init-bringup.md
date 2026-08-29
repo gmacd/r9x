@@ -1,12 +1,14 @@
 ---
+id: 70
 status: done
+commit: e6d9145
 ---
 
 # stage6-init-bringup: the boot-time bringup (kernel spawns, `init` is the first user process)
 
 **Follow-on to stage 6a** — deferred from the narrow slice (which is driven by
 the `namespace` test image). Needs tasks 66–69 done and proven. Plan:
-[plans/microkernel-nameserver.md](plans/microkernel-nameserver.md).
+[plans/microkernel-nameserver.md](../plans/microkernel-nameserver.md).
 
 ## Goal
 

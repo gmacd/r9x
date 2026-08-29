@@ -1,11 +1,12 @@
 ---
 id: 93
 status: done
+commit: 742a8bc
 ---
 
 # Task 93: Decode the DFSC in the EL0 fault print
 
-## Status: open
+## Status: done (742a8bc)
 
 ## Problem
 

@@ -5,7 +5,7 @@ status: done
 # microkernel-ipc-core: port::ipc — Channel, bounded Message, send/receive/reply
 
 Task 2 of 7 in the microkernel-substrate arc. Plan:
-[plans/microkernel-substrate.md](plans/microkernel-substrate.md). Lands after
+[plans/microkernel-substrate.md](../plans/microkernel-substrate.md). Lands after
 microkernel-priority-pi; lands before the Aspace / IRQ→message stages.
 
 ## Goal

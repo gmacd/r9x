@@ -1,11 +1,12 @@
 ---
 id: 94
 status: done
+commit: 39983bb
 ---
 
 # Task 94: map_to error path leaks the recursive entry; no read-back
 
-## Status: open
+## Status: done (39983bb)
 
 Two latent defects found while auditing the (wrongly) blamed recursive
 walk for task 87.

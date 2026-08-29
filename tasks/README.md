@@ -29,7 +29,20 @@ hold ("parked (spun off task 87; unpark trigger below)"). The two must agree —
 that is one of the things `cargo xtask tasks --check` is for (task 129).
 
 Older tasks are named by slug rather than number and have no `id`; the
-filename is their identity. Do not backfill numbers onto them.
+filename is their identity. Backfill an `id:` onto a slug-named done task
+only when a live task file cites its number — that is what `known_ids`
+resolves against — and take the number from `done.md`; never invent one.
+
+## The list in todo.md
+
+The open-task list in [`todo.md`](todo.md) sits between two markers:
+`<!-- xtask:tasks begin -->` and `<!-- xtask:tasks end -->`.
+`cargo xtask tasks --fix` reconciles only that region — dropping entries
+whose task is done or gone and appending bare entries for open tasks that
+are unlisted; the narrative, section headers and per-entry notes are
+hand-written, and `--fix` never writes outside the markers. `--check`
+reports a `todo.md` that has lost its markers, since its list can no
+longer be reconciled.
 
 ## Body
 

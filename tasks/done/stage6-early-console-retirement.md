@@ -6,7 +6,7 @@ status: done
 
 **Follow-on to stage 6a.** Needs `stage6-init-bringup` (the console server
 must be up at boot before the kernel can stand down). Records task 65's design
-intent as work. Plan: [plans/microkernel-nameserver.md](plans/microkernel-nameserver.md).
+intent as work. Plan: [plans/microkernel-nameserver.md](../plans/microkernel-nameserver.md).
 
 ## Goal
 

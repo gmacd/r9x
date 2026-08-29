@@ -5,7 +5,7 @@ status: done
 # microkernel-priority-pi: a priority scheduler with priority inheritance
 
 Task 1 of 7 in the microkernel-substrate arc. Plan:
-[plans/microkernel-substrate.md](plans/microkernel-substrate.md). Lands after the
+[plans/microkernel-substrate.md](../plans/microkernel-substrate.md). Lands after the
 tier-1 SMP correctness tasks; lands before microkernel-ipc-core.
 
 ## Goal

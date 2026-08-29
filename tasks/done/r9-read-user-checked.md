@@ -1,11 +1,12 @@
 ---
 id: 92
 status: done
+commit: b859dc8
 ---
 
 # Task 92: Fault-checked user-memory access
 
-## Status: open
+## Status: done (b859dc8)
 
 ## Problem
 

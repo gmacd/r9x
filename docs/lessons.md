@@ -1,7 +1,7 @@
 ---
 covers: aarch64/src/timer.rs, aarch64/src/gic.rs, port/src/mcslock.rs, xtask/src
 sources: the code cited per entry; debugging sessions, dated
-verified: f76d96a (2026-08-28)
+verified: afdea4f (2026-08-28)
 ---
 
 # Lessons learned
@@ -108,3 +108,30 @@ command is interrupted or the tool times out, the background QEMU is orphaned
 and no later command owns the kill. If a session used background QEMU, verify
 before finishing with `pgrep -fl qemu-system` (expect none);
 `pkill -9 -f qemu-system-aarch64` clears strays.
+
+## let-else reads and writes of one index do not sequence
+
+The workspace denies `clippy::mixed-read-write-in-expression` (root
+`Cargo.toml`). A let-else that **reads** an index in its scrutinee and
+**writes** it in the else branch is rejected: `lines[i]` in the scrutinee
+plus `i += 1` in the else is a mixed read/write as far as the lint is
+concerned. Bind the value in its own statement first — the read is then
+plainly sequenced before the write:
+
+```rust
+// Good — the read of `i` is its own statement
+let line = lines[i];
+let Some((number, file)) = parse_entry_head(line) else {
+    rebuilt.push(line.to_string());
+    i += 1;
+    continue;
+};
+
+// Bad — denied: read in the scrutinee, write in the else
+let Some((number, file)) = parse_entry_head(lines[i]) else {
+    ...;
+    i += 1;  // error: unsequenced read of `i`
+};
+```
+
+Witness: `xtask/src/tasks.rs`, the rebuild loop in `fix()`.

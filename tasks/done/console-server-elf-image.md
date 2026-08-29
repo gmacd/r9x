@@ -5,7 +5,7 @@ status: done
 # console-server-elf-image: embed the console ELF and prove it boots
 
 Task 4 of 4 in the user-binary-loading arc. Plan:
-[plans/user-binary-loading.md](plans/user-binary-loading.md).
+[plans/user-binary-loading.md](../plans/user-binary-loading.md).
 
 ## Status
 

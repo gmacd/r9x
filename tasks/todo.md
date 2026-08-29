@@ -34,6 +34,7 @@ Also corrected in that pass: `r9-mailbox-unsafe-safety.md` claimed
 "Task 101", colliding with `display-ns-handle-form.md`; its header now
 matches its index entry (task 13).
 
+<!-- xtask:tasks begin -->
 ## 1. Correctness — the kernel is wrong today
 
 Landing order is wave order, per the design doc. 102–108 are wave 0
@@ -240,6 +241,19 @@ refreshed 2026-08-27). Landing order per the audit: 46 → 50 → 47 → 45
     mailbox server has ten `unsafe` blocks and zero `// SAFETY:` proofs
     (the worst of `cmd/*`). The Device-buffer change (task 87) made their
     proof load-bearing. Add `// SAFETY:` at each site.
+130. [gicd-typer-bitfields.md](gicd-typer-bitfields.md) —
+    `it_lines_number`/`cpu_number` read the wrong GICD_TYPER bit ranges
+    (IHI 0048B.b Table 4-6); on the GIC-400 `cpu_number()` returns 7
+    where the register says 3. _Unused today, but it is the field SMP
+    bringup (task 124) will reach for._
+131. [tasks-findings-cleanup.md](tasks-findings-cleanup.md) — rephrase the
+    three references the tasks gate (task 129) reports: the plan-item
+    `task 3` and the arc-ordinal `Task 1`. _Editorial; the gate reports,
+    it does not decide._
+132. [tasks-gate-coverage-gaps.md](tasks-gate-coverage-gaps.md) — three
+    check classes the review found that the 129 spec omits: H1 versus
+    `id:`, duplicate listings, basename collisions. _Coverage gaps; none
+    fires today._
 
 ## 6. Parked — deliberate deferrals
 
@@ -270,3 +284,4 @@ refreshed 2026-08-27). Landing order per the audit: 46 → 50 → 47 → 45
     before deassertion storming a level-triggered SPI, `sys_irq_claim`'s
     publish order, and the 4 GiB allocator cap. _Batch behind one
     hardware bring-up session; also deletes f76d96a's dead `FB_PHYS`._
+<!-- xtask:tasks end -->

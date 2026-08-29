@@ -11,6 +11,7 @@ use std::{
 use target_lexicon::Triple;
 
 mod config;
+mod tasks;
 
 type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
@@ -317,6 +318,15 @@ fn main() {
                 clap::arg!(--systrace "Enable the kernel syscall trace (aarch64 only)"),
             ]),
         )
+        .subcommand(
+            clap::Command::new("tasks")
+                .about("Validates the tasks/ tree (front matter, references, todo.md index)")
+                .args(&[
+                    clap::arg!(--check "Report inconsistencies (the default)"),
+                    clap::arg!(--fix "Reconcile todo.md's list region with the tree")
+                        .conflicts_with("check"),
+                ]),
+        )
         .subcommand(clap::Command::new("clean").about("Cargo clean"))
         .get_matches();
 
@@ -335,6 +345,7 @@ fn main() {
         Some(("integration-test", m)) => IntegrationTestStep::new(m).run(),
         Some(("fmt", m)) => FmtStep::new(m).run(),
         Some(("ci", m)) => CiStep::new(m).run(),
+        Some(("tasks", m)) => tasks::run(m.get_flag("fix")),
         Some(("qemu", m)) => {
             let s1 = BuildStep::new(m);
             let s2 = DistStep::new(m);
@@ -2019,6 +2030,23 @@ impl CiStep {
 
         heading(&format!("test (host {})", std::env::consts::ARCH));
         TestStep { json_output: false, verbose: self.verbose }.run()?;
+
+        // The xtask package itself is host-only and not in TestStep's
+        // package list; its tests (the task-tree validator, the config
+        // parser) run here so `cargo xtask ci` matches the CI checks job.
+        heading("test (xtask)");
+        let mut cmd = Command::new(cargo());
+        cmd.current_dir(workspace());
+        cmd.arg("test");
+        cmd.arg("-p").arg("xtask");
+        cmd.arg("--quiet");
+        let status = annotated_status(&mut cmd)?;
+        if !status.success() {
+            return Err("xtask's own tests failed".into());
+        }
+
+        heading("tasks");
+        tasks::run(false)?;
 
         // Everything above stops at metadata or at a test binary, so none
         // of it links a kernel.  Building the image is the only thing that
