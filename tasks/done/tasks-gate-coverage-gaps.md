@@ -1,6 +1,7 @@
 ---
 id: 132
-status: open
+status: done
+commit: a7d238a
 ---
 
 # Task 132: the check classes the review found that task 129's spec omits
