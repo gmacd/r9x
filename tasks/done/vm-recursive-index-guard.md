@@ -1,12 +1,13 @@
 ---
 id: 104
-status: open
+status: done
 wave: 0
+commit: faf2a77
 ---
 
 # Task 104: next_mut is missing the recursive-index guard, giving EL0 arbitrary physical write
 
-## Status: open — wave 0
+## Status: done (faf2a77) — wave 0
 
 ## Problem
 
