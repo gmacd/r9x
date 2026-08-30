@@ -13,7 +13,7 @@ raised them. Opened tasks 135–143, waves 0–8 (landing order):
 
 | wave | task | What lands |
 |---|---|---|
-| 0 | 135 `premain-failure-observability` | the B4 cluster: early vector table, `putstr` before the DTB unwrap, pre-MMU panic hook, mini-UART to a captured sink; xtask stdout capture, per-image failure expectations, QEMU overrides, the `-dtb` guard, the dtb's real memory node |
+| 0 | 135 `premain-failure-observability` | the B4 cluster: early vector table, `putstr` before the DTB unwrap, pre-MMU panic hook, the mini-UART page mapped into the early tables (the post-MMU prints currently ride on the 1 GiB identity block, which task 142 makes PrivRo), mini-UART to a captured sink; xtask stdout capture, per-image failure expectations, QEMU overrides, the `-dtb` guard, the dtb's real memory node; scaffolds the first three test images (`earlyoutput.rs` implemented fully, `bootcontract.rs`, `earlytables.rs`) |
 | 1 | 136 `vminit-map-error-propagation` | B1: `map_phys_range` swallows every `map_to` error; the round-vs-reject decision (D20); the `next_mut` lifetime laundering (D15) |
 | 2 | 137 `vminit-null-page-policy` | B5: "Kernel Text" starts at PA 0; the null-page and boottext-start mapping-strategy decision |
 | 3 | 138 `vminit-recursive-alias-live` | B2: stale slot-511 self-pointers in the inherited tables leave writable, EL1-executable page-table aliases behind — the live corruption path |
@@ -834,6 +834,13 @@ Most of the above lands in three test images, mirroring the existing ones
 3. **`earlyoutput.rs`** — D1.1–D1.8, D7.1: a short image that reaches
    `boot::console`; its harness-side output is the golden file. Needs D0.1
    and D0.2 to exist at all.
+
+Scaffolding for all three images is owned by task 135 (wave 0 — the
+harness it builds is what makes two of the three observable):
+`earlyoutput.rs` is implemented fully by 135; `bootcontract.rs` lands
+with 135's dtb pins and is filled by 137/138/140/141/142; `earlytables.rs`
+lands with 138 (its D2.1 pin only passes once 138's fix is in) and is
+filled by 136/142/143.
 
 D8.1, D8.4–D8.6 are plain `#[cfg(test)]` unit tests in the `aarch64`
 package (D8.2/D8.3 first need the sink abstraction); D4.10, D4.11, D6.1,

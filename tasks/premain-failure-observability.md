@@ -61,8 +61,20 @@ assembled command lacks `-dtb`.
 - `vminit.rs`: `putstr` before the DTB unwrap; a pre-MMU panic hook over
   `init_early_uart_putc` so `unwrap`/`panic!` before the console emit
   their location.
-- Give the mini-UART a VA across the MMU window (map its page in the
-  early tables) or document the window in which it is dead.
+- Map the mini-UART page (4 KiB, device, PrivRw) into the early page
+  tables at `KZERO + 0xfe215040` so high-VA code — the early vector
+  table, the pre-MMU panic hook, `putstr` — can print at all times.
+  This is a **requirement, not an option**: the post-MMU `putstr` calls
+  (`vminit.rs:288,323`) only work today because the pointer value
+  `AUX_MU_IO` is the *low* VA `0xfe215040`, which translates through
+  TTBR0's 1 GiB identity block; when task 142 makes that block PrivRo,
+  the MMIO *write* faults and every post-MMU early print dies unless the
+  UART has a real mapping in the kernel tables. (The UART itself needs no
+  driver or dtb: it is fixed-address MMIO that `l.S` configures directly
+  before the MMU — `pre_mmu/util.rs:31,83`. If that setup fails or the
+  clock is wrong, `init_early_uart_putc` spins on LSR bit 5 unbounded
+  (audit D16) and the only signal is the hang — which is what D0.4's
+  expected-timeout semantics and the captured sink are for.)
 - xtask: capture QEMU stdout always (not only `--verbose`); wire the
   mini-UART (serial_hd(1)) to a captured sink instead of `null` and fix
   the PL011 comment at `xtask/src/main.rs:754`; per-image expected
@@ -76,6 +88,14 @@ assembled command lacks `-dtb`.
 
 ## Tests
 
+- **The first three test images are scaffolded here** (audit, "Suggested
+  first three images"; each with a `[[test]]` entry in
+  `aarch64/Cargo.toml`, `harness = false`, `required-features =
+  ["qemu-test"]`): `earlyoutput.rs` — implemented fully by this task
+  (D1.1–D1.8, D7.1); `bootcontract.rs` — lands with this task's dtb pins
+  (D5.1/D5.2) and is filled by tasks 137, 138, 140, 141, 142; and
+  `earlytables.rs` — lands with task 138 (its D2.1 pin only passes once
+  138's fix is in) and is filled by tasks 136, 142, 143.
 - The golden early transcript (checklist D1.1–D1.8): the `.` then the
   banner, the four map lines in ascending `range.start` order with
   `va == pa + KZERO` and correct sizes, "switching" then "complete"

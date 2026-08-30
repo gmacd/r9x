@@ -66,6 +66,9 @@ window, before the fix).
 - TTBR0 block: correct the comments and state the lifetime; make the
   block PrivRo (the transition only needs EL1 execute); have the test
   images switch TTBR0 to a null root at the end of their boot prefix.
+  Note the coupling: the post-MMU early prints ride on this block today
+  (low-VA access to the mini-UART) — task 135's UART mapping is what
+  makes PrivRo safe.
 - `physicalpt4`: write the recursive slot too (keeps the invariant
   universal), or scope the invariant to "the kernel root" and make
   `replace_recursive_entry(User, …)` refuse the early root.
