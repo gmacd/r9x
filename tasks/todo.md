@@ -34,6 +34,18 @@ Also corrected in that pass: `r9-mailbox-unsafe-safety.md` claimed
 "Task 101", colliding with `display-ns-handle-form.md`; its header now
 matches its index entry (task 13).
 
+**Pre-`main9` boot review 2026-08-30, tree at `ac98648`** —
+design doc [plans/premain-boot-review-2026-08.md](plans/premain-boot-review-2026-08.md).
+Opened 135–143. The audit (three independent reviews plus an adversarial
+final gate, all with live QEMU `raspi4b` experiments) found five bugs,
+twenty-three design risks and eighteen comment findings in `l.S` →
+`main9`.  The two that matter most: the pre-MMU walker leaves
+writable, EL1-executable self-pointer aliases in the tables the kernel
+then runs on (task 138), and every pre-`main9` failure is a silent hang
+(task 135).  The QEMU `raspi4b` contract (dtb mandatory for r9, 2 GiB
+machine RAM, memory node patched to 960 MiB) is recorded in the plan doc
+as ruling 2 — it bounds what the integration tests can prove.
+
 <!-- xtask:tasks begin -->
 ## 1. Correctness — the kernel is wrong today
 
@@ -230,7 +242,71 @@ refreshed 2026-08-27). Landing order per the audit: 46 → 50 → 47 → 45
     (IHI 0048B.b Table 4-6); on the GIC-400 `cpu_number()` returns 7
     where the register says 3. _Unused today, but it is the field SMP
     bringup (task 124) will reach for._
-## 6. Parked — deliberate deferrals
+## 6. aarch64 pre-`main9` boot path (plan: premain-boot-review-2026-08)
+
+Landing order is wave order, per the plan doc. Waves 0–1 first: they make
+failures visible and record the alignment decision two later fixes are
+blocked on.
+
+135. [premain-failure-observability.md](premain-failure-observability.md) —
+    every pre-`main9` failure is a silent hang: `VBAR_EL1` unset until
+    `main9`, the DTB unwrapped before the first `putstr`, pre-console
+    panics print nothing, the mini-UART loses its address at MMU-enable,
+    and xtask sends it to `null`._Early vector table, pre-MMU panic
+    hook, captured serial, golden transcript, the `-dtb` guard, the dtb's
+    real memory node._
+136. [vminit-map-error-propagation.md](vminit-map-error-propagation.md) —
+    pre-MMU `map_phys_range` swallows every `map_to` failure and returns
+    `Ok`; the "rounds the requested range" doc is a lie (the code
+    rejects); `next_mut` launders an unbounded lifetime. _The
+    round-vs-reject decision lands here; it unblocks 137 and constrains
+    139's script change._
+137. [vminit-null-page-policy.md](vminit-null-page-policy.md) —
+    "Kernel Text" starts at PA 0: the null page is mapped (a kernel-mode
+    null read or jump hits QEMU machine data / firmware instead of
+    faulting) and `[0, 0x80000)` is claimed as kernel text. _A
+    mapping-strategy decision, not a one-liner (the 2 MiB block and the
+    `0x80000` start collide with the page-size contract)._
+138. [vminit-recursive-alias-live.md](vminit-recursive-alias-live.md) —
+    pre-MMU slot-511 self-pointers survive into the live kernel tables,
+    whose post-MMU walker only guards level 0: a 4 KiB mapping of a frame
+    in `[0x3fe00000, 0x40000000)` at `KZERO` walks the stale self-pointer
+    and overwrites the 2 MiB block mapping the kernel's own text. _Every
+    page table is also a writable, EL1-executable alias at a KZERO VA the
+    kernel believes unmapped (probed live in the guest)._
+139. [earlyvm-pool-reservation.md](earlyvm-pool-reservation.md) — the live
+    page tables are reserved from the allocator only by section-ordering
+    accident (`ebss_pa` is the LMA of an empty section); the `_pa` block
+    and the range list exist twice and have drifted. _Reserve the pool by
+    name; one home for the contract; equality and physical-address
+    asserts._
+140. [ls-entry-path-convergence.md](ls-entry-path-convergence.md) — the
+    direct-EL1 entry skips FPU enable and inherits unspecified DAIF;
+    `CPTR_EL2.TFP`/`CNTHCTL_EL2`/`CNTVOFF_EL2` left at reset; the MPIDR
+    check masks Aff0 only (a second cluster's core 0 races boot). _All
+    three entry paths converge on the same register state; `0xffff`
+    mask._
+141. [boot-mmu-enable-sequence.md](boot-mmu-enable-sequence.md) —
+    `SCTLR_EL1` ORed over UNKNOWN reset state (no `EE`/`WXN` clear), no
+    cache maintenance before M|C|I, no ISB between the translation writes
+    and the MMU enable. _The canonical DEN0024 sequence; QEMU-unverifiable
+    — value pins in an image, metal validation in task 127._
+142. [early-table-lifetime-hygiene.md](early-table-lifetime-hygiene.md) —
+    the TTBR0 1 GiB identity block is live until `vm::switch` (never, in
+    short test images) and its comments say otherwise; the user root has
+    no recursive slot; the 16 KiB boot stack abuts the pool with no guard;
+    the pool is emitted as CONTENTS (33 MiB image, 128 KiB of redundant
+    zeros); nothing checks the image against the DTB. _Lifetime,
+    permissions, guard, NOBITS, overlap assert._
+143. [premain-comment-sweep.md](premain-comment-sweep.md) — eighteen
+    comment findings (MAIR nGnRE, the inverse GPIO-mask comments, the
+    dead `x28`, the copy-pasted QEMU machine list, the stale `.quad`/`PT_*`
+    fragments) plus KZERO defined three times, do-while BSS-clear loops,
+    the SError/RAS decision, the mini-UART clock assumption, and
+    self-pointer entries with wrong attributes. _Mechanical; the two
+    decisions are recorded in the resolution._
+
+## 7. Parked — deliberate deferrals
 
 78. [r9x-std-servers.md](r9x-std-servers.md) — 9P client over
     `r9x_std::ipc`. Gated on fs/dev/net servers landing. _Notes added:
